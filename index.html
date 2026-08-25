@@ -3620,7 +3620,7 @@ if(!state.onboarded){
   if(name && name.trim()) state.businessName = name.trim();
   state.onboarded = true;
 }
-save();
+try{ localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }catch(e){}
 render();
 initGoogleAuth();
 </script>
