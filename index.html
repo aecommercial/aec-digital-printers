@@ -378,7 +378,7 @@ function scheduleDriveSave(){
   }, 1200);
 }
 
-function uid(){ return state.nextId++; }
+function driveSignOut(){   if(gAccessToken && window.google){ google.accounts.oauth2.revoke(gAccessToken, ()=>{}); }   gAccessToken = null; gDriveReady = false; gDriveFileId = null;   driveStatus('signed out');   const gate = document.getElementById('signinGate');   if(gate) gate.style.display = 'flex'; } function uid(){ return state.nextId++; }
 function todayISO(){ return new Date().toISOString().slice(0,10); }
 function fmt(n){ n = Number(n)||0; return n.toLocaleString('en-IN', {maximumFractionDigits:2, minimumFractionDigits: Number.isInteger(n)?0:2}); }
 function money(n){ return state.currency + fmt(n); }
