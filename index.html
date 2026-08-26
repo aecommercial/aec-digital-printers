@@ -126,7 +126,7 @@
 
   .inv-modal{ display:none; position:fixed; inset:0; background:rgba(22,33,62,.6); z-index:200; align-items:flex-start; justify-content:center; overflow:auto; padding:26px 16px;}
   .inv-actions{ position:sticky; top:0; display:flex; justify-content:flex-end; gap:10px; margin-bottom:12px; width:210mm; max-width:100%;}
-  .inv-sheet{ background:#fff; color:#000; width:210mm; max-width:100%; min-height:297mm; padding:14mm; box-shadow:var(--shadow); font-family:Calibri,Arial,sans-serif;}
+  .inv-sheet{ background:#F7ECE4; color:#000; width:210mm; max-width:100%; min-height:297mm; padding:14mm; box-shadow:var(--shadow); font-family:Calibri,Arial,sans-serif; -webkit-print-color-adjust:exact; print-color-adjust:exact;}
   .inv-sheet table{ border-collapse:collapse;}
   .party-modal{ display:none; position:fixed; inset:0; background:rgba(22,33,62,.6); z-index:220; align-items:center; justify-content:center; padding:16px;}
   .party-card{ background:#fff; color:var(--ink); width:420px; max-width:100%; border-radius:12px; padding:20px 22px; box-shadow:var(--shadow);}
@@ -215,6 +215,7 @@ function seedState(){
     },
     invoiceSettings:{
       businessLegalName: 'A E Commercial',
+      tagline: 'Digital printing & stationery',
       gstin: '27AZEPB1703A1ZB',
       pan: 'AZEPB1703A',
       address: 'Mufaddal Upliftment, Vasind, 421601.',
@@ -252,6 +253,7 @@ function load(){
     if(p.businessGSTIN===undefined) p.businessGSTIN = '';
     if(p.homeState===undefined) p.homeState = '';
     if(!p.invoiceSettings) p.invoiceSettings = seedState().invoiceSettings;
+    if(p.invoiceSettings.tagline===undefined) p.invoiceSettings.tagline = 'Digital printing & stationery';
     if(p.invoiceSettings.lastInvoiceFY===undefined) p.invoiceSettings.lastInvoiceFY = null;
     if(p.invoiceSettings.lastInvoiceNo===undefined) p.invoiceSettings.lastInvoiceNo = '';
     if(p.invoiceSettings.lastCashInvoiceFY===undefined) p.invoiceSettings.lastCashInvoiceFY = null;
@@ -731,6 +733,18 @@ function numToWordsIndian(num){
   return parts.join(' ');
 }
 
+/* Renders the business name in two tones: navy up to (and not including) "Commercial", rose-gold from
+   "Commercial" onward — matches the approved invoice branding. Falls back to solid navy if the saved
+   business name doesn't contain "Commercial" (e.g. it gets renamed later in Settings). */
+function brandNameHtml(name){
+  name = name || '';
+  const idx = name.indexOf('Commercial');
+  if(idx===-1) return `<span style="color:#162660;">${name}</span>`;
+  const first = name.slice(0, idx).trim();
+  const rest = name.slice(idx);
+  return `<span style="color:#162660;">${first}</span> <span style="color:#a8794f;">${rest}</span>`;
+}
+
 function openInvoice(txId){
   const t = state.transactions.find(x=>x.id==txId);
   if(!t) return;
@@ -776,14 +790,18 @@ function openInvoice(txId){
       <button class="btn primary" id="invPrintBtn">🖨 Print / Save as PDF</button>
     </div>
     <div class="inv-sheet">
-      <div style="text-align:center;font-weight:700;font-size:20px;">${inv.businessLegalName}</div>
-      <div style="text-align:center;font-weight:700;font-size:15px;margin-top:2px;">${isCashInvoice ? 'Invoice' : 'Tax Invoice'}</div>
-      <hr style="margin:10px 0;border:none;border-top:1px solid #000;">
-      <table style="width:100%;font-size:12.5px;border-collapse:collapse;">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;padding-bottom:12px;border-bottom:2px solid #162660;">
+        <div>
+          <div style="font-weight:700;font-size:21px;">${brandNameHtml(inv.businessLegalName)}</div>
+          ${inv.tagline ? `<div style="font-size:11px;color:#8a5a3a;margin-top:3px;">${inv.tagline}</div>` : ''}
+        </div>
+        <div style="text-align:right;font-weight:700;font-size:14px;letter-spacing:.05em;color:#162660;padding-top:3px;">${isCashInvoice ? 'INVOICE' : 'TAX INVOICE'}</div>
+      </div>
+      <table style="width:100%;font-size:12.5px;border-collapse:collapse;margin-top:14px;">
         <tr>
           <td style="width:55%;vertical-align:top;padding:0 8px 0 0;">
-            <b>Billed To</b><br>
-            ${t.description || '—'}<br>
+            <div style="font-size:9.5px;color:#8a5a3a;text-transform:uppercase;letter-spacing:.05em;margin-bottom:3px;">Billed To</div>
+            <b>${t.description || '—'}</b><br>
             ${t.address ? t.address+'<br>' : ''}
             ${contactBits ? contactBits+'<br>' : ''}
             ${t.gstin ? 'GST No. '+t.gstin : ''}
@@ -795,7 +813,7 @@ function openInvoice(txId){
         </tr>
       </table>
       <table style="width:100%;border-collapse:collapse;margin-top:12px;font-size:12.5px;">
-        <thead><tr style="border-top:1px solid #000;border-bottom:1px solid #000;">
+        <thead><tr style="border-top:1px solid #162660;border-bottom:1px solid #162660;">
           <th style="padding:5px 6px;text-align:center;">Sr No</th>
           <th style="padding:5px 6px;text-align:left;">Description</th>
           <th style="padding:5px 6px;text-align:center;">Qty</th>
@@ -808,10 +826,10 @@ function openInvoice(txId){
           ${fillerRows}
         </tbody>
         <tfoot>
-          <tr style="border-top:1px solid #000;"><td colspan="5" style="text-align:right;padding:3px 6px;">Subtotal</td><td style="text-align:right;padding:3px 6px;">${money(subtotal)}</td></tr>
+          <tr style="border-top:1px solid #d9b8a0;"><td colspan="5" style="text-align:right;padding:3px 6px;">Subtotal</td><td style="text-align:right;padding:3px 6px;">${money(subtotal)}</td></tr>
           ${taxRows}
           <tr><td colspan="5" style="text-align:right;padding:3px 6px;">Round Off</td><td style="text-align:right;padding:3px 6px;">${money(roundOff)}</td></tr>
-          <tr style="border-top:2px solid #000;font-weight:700;"><td colspan="5" style="text-align:right;padding:5px 6px;">TOTAL</td><td style="text-align:right;padding:5px 6px;">${money(grand)}</td></tr>
+          <tr style="border-top:2px solid #162660;font-weight:700;"><td colspan="5" style="text-align:right;padding:5px 6px;">TOTAL</td><td style="text-align:right;padding:5px 6px;color:#162660;">${money(grand)}</td></tr>
         </tfoot>
       </table>
       <div style="margin-top:8px;font-size:12.5px;"><b>Rs.</b> ${numToWordsIndian(grand)} Rupees Only</div>
@@ -830,7 +848,7 @@ function openInvoice(txId){
           </td>
         </tr>
       </table>
-      <div style="text-align:center;font-size:10px;margin-top:14px;border-top:1px solid #000;padding-top:6px;">
+      <div style="text-align:center;font-size:10px;margin-top:16px;border-top:2px solid #162660;padding-top:8px;color:#8a5a3a;">
         GST No. ${inv.gstin} &nbsp;&nbsp; PAN No. ${inv.pan}<br>
         Address: ${inv.address} Mobile No.: ${inv.mobile}, Email ${inv.email}
       </div>
@@ -3320,6 +3338,7 @@ function renderSettings(main){
       <h2>Invoice details <span class="tag">used on printed / PDF invoices</span></h2>
       <div class="settings-grid">
         <div><label>Business legal name (on invoice)</label><input id="invNameInput" value="${state.invoiceSettings.businessLegalName}"></div>
+        <div><label>Tagline (under name)</label><input id="invTaglineInput" value="${state.invoiceSettings.tagline||''}"></div>
         <div><label>GSTIN</label><input id="invGstinInput" value="${state.invoiceSettings.gstin}" maxlength="15" style="text-transform:uppercase;"></div>
         <div><label>PAN</label><input id="invPanInput" value="${state.invoiceSettings.pan}" maxlength="10" style="text-transform:uppercase;"></div>
         <div><label>Address</label><input id="invAddressInput" value="${state.invoiceSettings.address}"></div>
@@ -3361,6 +3380,7 @@ function renderSettings(main){
   document.getElementById('saveInvBtn').addEventListener('click', ()=>{
     state.invoiceSettings = {
       businessLegalName: document.getElementById('invNameInput').value.trim() || state.invoiceSettings.businessLegalName,
+      tagline: document.getElementById('invTaglineInput').value.trim(),
       gstin: document.getElementById('invGstinInput').value.trim().toUpperCase(),
       pan: document.getElementById('invPanInput').value.trim().toUpperCase(),
       address: document.getElementById('invAddressInput').value.trim(),
