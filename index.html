@@ -125,9 +125,15 @@
   .tabs-sub button.active{ background:var(--ink); color:#fff; border-color:var(--ink);}
 
   .inv-modal{ display:none; position:fixed; inset:0; background:rgba(22,33,62,.6); z-index:200; align-items:flex-start; justify-content:center; overflow:auto; padding:26px 16px;}
+  @page { size: A4; margin: 0; }
   .inv-actions{ position:sticky; top:0; display:flex; justify-content:flex-end; gap:10px; margin-bottom:12px; width:210mm; max-width:100%;}
   .inv-sheet{ background:#F7ECE4; color:#000; width:210mm; max-width:100%; min-height:297mm; padding:14mm; box-shadow:var(--shadow); font-family:Calibri,Arial,sans-serif; -webkit-print-color-adjust:exact; print-color-adjust:exact;}
   .inv-sheet table{ border-collapse:collapse;}
+  .inv-pages{ display:flex; flex-direction:column; align-items:center; gap:20px;}
+  .inv-sheet--col{ display:flex; flex-direction:column;}
+  .inv-sheet--break{ break-before:page; page-break-before:always;}
+  .inv-spacer{ flex:1; min-height:0;}
+  .inv-items-tbl tr{ break-inside:avoid; page-break-inside:avoid;}
   .party-modal{ display:none; position:fixed; inset:0; background:rgba(22,33,62,.6); z-index:220; align-items:center; justify-content:center; padding:16px;}
   .party-card{ background:#fff; color:var(--ink); width:420px; max-width:100%; border-radius:12px; padding:20px 22px; box-shadow:var(--shadow);}
   .party-card h3{ font-family:'Space Grotesk',sans-serif; font-size:16px; margin:0 0 14px;}
@@ -145,11 +151,11 @@
   .line-tbl td.linegst{ width:80px;}
   .line-tbl td.linermv{ width:30px; text-align:center;}
   @media print{
-    body *{ visibility:hidden;}
-    .inv-modal, .inv-modal *{ visibility:visible;}
-    .inv-modal{ position:absolute; inset:0; background:#fff; padding:0; display:flex;}
+    body > *:not(.inv-modal){ display:none !important;}
+    .inv-modal{ display:block; position:static; background:#fff; padding:0;}
     .inv-actions{ display:none;}
-    .inv-sheet{ box-shadow:none; margin:0; width:auto; min-height:auto;}
+    .inv-pages{ display:block;}
+    .inv-sheet{ box-shadow:none; margin:0;}
   }
 </style>
 </head>
@@ -773,85 +779,114 @@ function openInvoice(txId){
   }
 
   const itemRows = lines.map((ln,i)=>`
-    <tr><td style="padding:5px 6px;text-align:center;">${i+1}</td>
-    <td style="padding:5px 6px;">${ln.name||''}</td>
-    <td style="padding:5px 6px;text-align:center;">${ln.qty!=null && ln.qty!==''?fmt(ln.qty):''}</td>
-    <td style="padding:5px 6px;text-align:right;">${ln.rate!=null && ln.rate!==''?money(ln.rate):''}</td>
-    <td style="padding:5px 6px;text-align:center;">${ln.gstRate!=null?ln.gstRate+'%':''}</td>
-    <td style="padding:5px 6px;text-align:right;">${money(ln.amount)}</td></tr>`).join('');
-  const fillerCount = Math.max(0, 7 - lines.length);
-  const fillerRows = Array(fillerCount).fill('<tr><td style="padding:5px 6px;">&nbsp;</td><td></td><td></td><td></td><td></td><td></td></tr>').join('');
+    <tr><td style="padding:7px 6px;text-align:center;">${i+1}</td>
+    <td style="padding:7px 6px;">${ln.name||''}</td>
+    <td style="padding:7px 6px;text-align:center;">${ln.qty!=null && ln.qty!==''?fmt(ln.qty):''}</td>
+    <td style="padding:7px 6px;text-align:right;">${ln.rate!=null && ln.rate!==''?money(ln.rate):''}</td>
+    <td style="padding:7px 6px;text-align:center;">${ln.gstRate!=null?ln.gstRate+'%':''}</td>
+    <td style="padding:7px 6px;text-align:right;">${money(ln.amount)}</td></tr>`).join('');
+
+  // Place of Supply: derive from the customer's GSTIN when we have one (authoritative — the state
+  // code is encoded in the first 2 digits). Without a GSTIN, only show it when we know it's intra-state
+  // (the common case for local/unregistered customers) since we don't keep the party's state on the
+  // transaction itself otherwise; showing a guessed state name would risk printing the wrong one.
+  let placeOfSupply = null;
+  if(t.gstin){
+    const code = gstStateCode(t.gstin);
+    placeOfSupply = code ? gstStateName(code) : null;
+  } else if(t.supplyType !== 'inter'){
+    placeOfSupply = state.homeState || null;
+  }
 
   const contactBits = [t.contactPerson ? 'Attn: '+t.contactPerson : '', t.contactNumber ? 'Ph: '+t.contactNumber : ''].filter(Boolean).join(' · ');
 
-  const html = `
-    <div class="inv-actions">
-      <button class="btn ghost" id="invCloseBtn">✕ Close</button>
-      <button class="btn primary" id="invPrintBtn">🖨 Print / Save as PDF</button>
-    </div>
-    <div class="inv-sheet">
-      <div style="display:flex;justify-content:space-between;align-items:flex-start;padding-bottom:12px;border-bottom:2px solid #162660;">
+  const headerBlock = `
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;padding-bottom:14px;border-bottom:2px solid #162660;">
         <div>
-          <div style="font-weight:700;font-size:21px;">${brandNameHtml(inv.businessLegalName)}</div>
-          ${inv.tagline ? `<div style="font-size:11px;color:#8a5a3a;margin-top:3px;">${inv.tagline}</div>` : ''}
+          <div style="font-weight:700;font-size:30px;">${brandNameHtml(inv.businessLegalName)}</div>
+          ${inv.tagline ? `<div style="font-size:15px;color:#8a5a3a;margin-top:4px;">${inv.tagline}</div>` : ''}
         </div>
-        <div style="text-align:right;font-weight:700;font-size:14px;letter-spacing:.05em;color:#162660;padding-top:3px;">${isCashInvoice ? 'INVOICE' : 'TAX INVOICE'}</div>
+        <div style="text-align:right;font-weight:700;font-size:20px;letter-spacing:.05em;color:#162660;padding-top:3px;">${isCashInvoice ? 'INVOICE' : 'TAX INVOICE'}</div>
       </div>
-      <table style="width:100%;font-size:12.5px;border-collapse:collapse;margin-top:14px;">
-        <tr>
-          <td style="width:55%;vertical-align:top;padding:0 8px 0 0;">
-            <div style="font-size:9.5px;color:#8a5a3a;text-transform:uppercase;letter-spacing:.05em;margin-bottom:3px;">Billed To</div>
-            <b>${t.description || '—'}</b><br>
-            ${t.address ? t.address+'<br>' : ''}
-            ${contactBits ? contactBits+'<br>' : ''}
-            ${t.gstin ? 'GST No. '+t.gstin : ''}
-          </td>
-          <td style="width:45%;vertical-align:top;">
-            <div>Invoice No. ${t.invoiceNo || ('(none — set one on the entry)')}</div>
-            <div>Date - ${dispDate(t.date)}</div>
-          </td>
-        </tr>
-      </table>
-      <table style="width:100%;border-collapse:collapse;margin-top:12px;font-size:12.5px;">
-        <thead><tr style="border-top:1px solid #162660;border-bottom:1px solid #162660;">
-          <th style="padding:5px 6px;text-align:center;">Sr No</th>
-          <th style="padding:5px 6px;text-align:left;">Description</th>
-          <th style="padding:5px 6px;text-align:center;">Qty</th>
-          <th style="padding:5px 6px;text-align:right;">Rate</th>
-          <th style="padding:5px 6px;text-align:center;">GST %</th>
-          <th style="padding:5px 6px;text-align:right;">Amount</th>
+      <div style="display:flex;justify-content:space-between;gap:20px;padding:18px 0;border-bottom:0.5px solid #e8d2c0;font-size:15px;">
+        <div style="width:55%;">
+          <div style="font-size:18px;color:#8a5a3a;text-transform:uppercase;letter-spacing:.04em;margin-bottom:4px;">Bill To</div>
+          <b>${t.description || '—'}</b><br>
+          ${t.address ? t.address+'<br>' : ''}
+          ${contactBits ? contactBits+'<br>' : ''}
+          ${t.gstin ? 'GST No. '+t.gstin : ''}
+        </div>
+        <table style="width:45%;border-collapse:collapse;height:fit-content;">
+          <tr><td style="color:#8a5a3a;padding:2px 0;text-align:right;">Invoice No.</td><td style="text-align:right;padding:2px 0 2px 10px;font-weight:700;">${t.invoiceNo || ('(none — set one on the entry)')}</td></tr>
+          <tr><td style="color:#8a5a3a;padding:2px 0;text-align:right;">Invoice Date</td><td style="text-align:right;padding:2px 0 2px 10px;font-weight:700;">${dispDate(t.date)}</td></tr>
+          ${placeOfSupply ? `<tr><td style="color:#8a5a3a;padding:2px 0;text-align:right;">Place of Supply</td><td style="text-align:right;padding:2px 0 2px 10px;font-weight:700;">${placeOfSupply}</td></tr>` : ''}
+        </table>
+      </div>
+      <table class="inv-items-tbl" style="width:100%;border-collapse:collapse;table-layout:fixed;margin-top:6px;font-size:15px;">
+        <thead><tr style="border-bottom:1px solid #b28a5c;">
+          <th style="padding:9px 6px;text-align:center;width:8%;">Sr No</th>
+          <th style="padding:9px 6px;text-align:left;width:34%;">Description</th>
+          <th style="padding:9px 6px;text-align:center;width:12%;">Qty</th>
+          <th style="padding:9px 6px;text-align:right;width:16%;">Rate</th>
+          <th style="padding:9px 6px;text-align:center;width:10%;">GST %</th>
+          <th style="padding:9px 6px;text-align:right;width:20%;">Amount</th>
         </tr></thead>
         <tbody>
           ${itemRows}
-          ${fillerRows}
         </tbody>
+      </table>`;
+
+  const totalsBlock = `
+      <table style="width:100%;border-collapse:collapse;font-size:15px;">
         <tfoot>
           <tr style="border-top:1px solid #d9b8a0;"><td colspan="5" style="text-align:right;padding:3px 6px;">Subtotal</td><td style="text-align:right;padding:3px 6px;">${money(subtotal)}</td></tr>
           ${taxRows}
           <tr><td colspan="5" style="text-align:right;padding:3px 6px;">Round Off</td><td style="text-align:right;padding:3px 6px;">${money(roundOff)}</td></tr>
-          <tr style="border-top:2px solid #162660;font-weight:700;"><td colspan="5" style="text-align:right;padding:5px 6px;">TOTAL</td><td style="text-align:right;padding:5px 6px;color:#162660;">${money(grand)}</td></tr>
+          <tr style="border-top:2px solid #162660;font-weight:700;"><td colspan="5" style="text-align:right;padding:7px 6px;">TOTAL</td><td style="text-align:right;padding:7px 6px;font-size:20px;color:#162660;">${money(grand)}</td></tr>
         </tfoot>
       </table>
-      <div style="margin-top:8px;font-size:12.5px;"><b>Rs.</b> ${numToWordsIndian(grand)} Rupees Only</div>
-      <table style="width:100%;margin-top:26px;font-size:11.5px;">
+      <div style="margin-top:8px;font-size:15px;"><b>Rs.</b> ${numToWordsIndian(grand)} Rupees Only</div>
+      <table style="width:100%;margin-top:26px;font-size:15px;">
         <tr>
           <td style="width:55%;vertical-align:top;">
-            <b>Bank Details:</b><br>${inv.bankName}<br>
+            <div style="font-size:18px;color:#8a5a3a;text-transform:uppercase;letter-spacing:.04em;margin-bottom:4px;">Bank Details</div>
+            ${inv.bankName}<br>
             Account Holder: ${inv.accountHolder}<br>
             Account No.: ${inv.accountNo}<br>
             IFSC Code: ${inv.ifsc}
           </td>
           <td style="width:45%;vertical-align:top;text-align:right;">
             Thanking You<br><br><br>
-            For ${inv.businessLegalName}<br><br><br>
-            Authorised Signature
+            <div style="font-size:18px;color:#8a5a3a;text-transform:uppercase;letter-spacing:.04em;margin-bottom:4px;">Authorised Signatory</div>
+            For ${inv.businessLegalName}<br><br>
           </td>
         </tr>
       </table>
-      <div style="text-align:center;font-size:10px;margin-top:16px;border-top:2px solid #162660;padding-top:8px;color:#8a5a3a;">
+      <div style="text-align:center;font-size:15px;margin-top:16px;border-top:2px solid #162660;padding-top:8px;color:#8a5a3a;">
         GST No. ${inv.gstin} &nbsp;&nbsp; PAN No. ${inv.pan}<br>
         Address: ${inv.address} Mobile No.: ${inv.mobile}, Email ${inv.email}
-      </div>
+      </div>`;
+
+  const SINGLE_PAGE_MAX = 14; // empirically tested with typical one-line item descriptions
+  const pagesHtml = lines.length <= SINGLE_PAGE_MAX
+    ? `<div class="inv-sheet inv-sheet--col">
+         <div>${headerBlock}</div>
+         <div class="inv-spacer"></div>
+         <div>${totalsBlock}</div>
+       </div>`
+    : `<div class="inv-sheet">${headerBlock}</div>
+       <div class="inv-sheet inv-sheet--col inv-sheet--break">
+         <div class="inv-spacer"></div>
+         <div>${totalsBlock}</div>
+       </div>`;
+
+  const html = `
+    <div class="inv-actions">
+      <button class="btn ghost" id="invCloseBtn">✕ Close</button>
+      <button class="btn primary" id="invPrintBtn">🖨 Print / Save as PDF</button>
+    </div>
+    <div class="inv-pages">
+      ${pagesHtml}
     </div>
   `;
   let modal = document.getElementById('invoiceModal');
