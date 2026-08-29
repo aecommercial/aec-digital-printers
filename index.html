@@ -756,16 +756,28 @@ function openInvoice(txId){
   if(!t) return;
   const inv = state.invoiceSettings;
   const lines = txItems(t);
-  const subtotal = Number(t.amount)||0;
-  const total = txTotal(t);
-  const roundOff = round2(Math.round(total) - (subtotal + (t.cgst||0)+(t.sgst||0)+(t.igst||0)));
+  // Credit/debit notes: stock and GST are reversed in storage using negative qty/amount/tax, so they net
+  // out correctly wherever sales/purchases get totalled. On the printed document itself, flip the sign
+  // back so the note shows the credited/debited value as a normal positive amount, not a negative one.
+  const isReturnDoc = t.docType==='credit-note' || t.docType==='debit-note';
+  const signFix = isReturnDoc ? -1 : 1;
+  const subtotal = signFix * (Number(t.amount)||0);
+  const cgstDisp = signFix * (t.cgst||0), sgstDisp = signFix * (t.sgst||0), igstDisp = signFix * (t.igst||0);
+  const total = signFix * txTotal(t);
+  const roundOff = round2(Math.round(total) - (subtotal + cgstDisp + sgstDisp + igstDisp));
   const grand = Math.round(total);
   const isCashInvoice = (t.saleChannel||'local-gst')==='local-cash';
+  let docLabel;
+  if(t.docType==='credit-note') docLabel = 'CREDIT NOTE';
+  else if(t.docType==='debit-note') docLabel = 'DEBIT NOTE';
+  else docLabel = isCashInvoice ? 'INVOICE' : 'TAX INVOICE';
+  const noNoLabel = t.docType==='credit-note' ? 'Credit Note No.' : t.docType==='debit-note' ? 'Debit Note No.' : 'Invoice No.';
+  const noDateLabel = t.docType==='credit-note' ? 'Credit Note Date' : t.docType==='debit-note' ? 'Debit Note Date' : 'Invoice Date';
 
   let taxRows = '';
   if(!isCashInvoice){
     const rateGroups = {};
-    lines.forEach(ln=>{ const r = ln.gstRate!=null ? ln.gstRate : (t.gstRate||0); rateGroups[r] = (rateGroups[r]||0) + (Number(ln.amount)||0); });
+    lines.forEach(ln=>{ const r = ln.gstRate!=null ? ln.gstRate : (t.gstRate||0); rateGroups[r] = (rateGroups[r]||0) + signFix*(Number(ln.amount)||0); });
     Object.keys(rateGroups).sort((a,b)=>a-b).forEach(rateKey=>{
       const rate = parseFloat(rateKey);
       const g = computeGST(rateGroups[rateKey], rate, t.supplyType);
@@ -781,10 +793,10 @@ function openInvoice(txId){
   const itemRows = lines.map((ln,i)=>`
     <tr><td style="padding:7px 6px;text-align:center;">${i+1}</td>
     <td style="padding:7px 6px;">${ln.name||''}</td>
-    <td style="padding:7px 6px;text-align:center;">${ln.qty!=null && ln.qty!==''?fmt(ln.qty):''}</td>
+    <td style="padding:7px 6px;text-align:center;">${ln.qty!=null && ln.qty!==''?fmt(Math.abs(ln.qty)):''}</td>
     <td style="padding:7px 6px;text-align:right;">${ln.rate!=null && ln.rate!==''?money(ln.rate):''}</td>
     <td style="padding:7px 6px;text-align:center;">${ln.gstRate!=null?ln.gstRate+'%':''}</td>
-    <td style="padding:7px 6px;text-align:right;">${money(ln.amount)}</td></tr>`).join('');
+    <td style="padding:7px 6px;text-align:right;">${money(signFix*(Number(ln.amount)||0))}</td></tr>`).join('');
 
   // Place of Supply: derive from the customer's GSTIN when we have one (authoritative — the state
   // code is encoded in the first 2 digits). Without a GSTIN, only show it when we know it's intra-state
@@ -806,19 +818,20 @@ function openInvoice(txId){
           <div style="font-weight:700;font-size:30px;">${brandNameHtml(inv.businessLegalName)}</div>
           ${inv.tagline ? `<div style="font-size:15px;color:#8a5a3a;margin-top:4px;">${inv.tagline}</div>` : ''}
         </div>
-        <div style="text-align:right;font-weight:700;font-size:20px;letter-spacing:.05em;color:#162660;padding-top:3px;">${isCashInvoice ? 'INVOICE' : 'TAX INVOICE'}</div>
+        <div style="text-align:right;font-weight:700;font-size:20px;letter-spacing:.05em;color:#162660;padding-top:3px;">${docLabel}</div>
       </div>
       <div style="display:flex;justify-content:space-between;gap:20px;padding:18px 0;border-bottom:0.5px solid #e8d2c0;font-size:15px;">
         <div style="width:55%;">
-          <div style="font-size:18px;color:#8a5a3a;text-transform:uppercase;letter-spacing:.04em;margin-bottom:4px;">Bill To</div>
+          <div style="font-size:18px;color:#8a5a3a;text-transform:uppercase;letter-spacing:.04em;margin-bottom:4px;">${isReturnDoc ? 'Issued To' : 'Bill To'}</div>
           <b>${t.description || '—'}</b><br>
           ${t.address ? t.address+'<br>' : ''}
           ${contactBits ? contactBits+'<br>' : ''}
           ${t.gstin ? 'GST No. '+t.gstin : ''}
         </div>
         <table style="width:45%;border-collapse:collapse;height:fit-content;">
-          <tr><td style="color:#8a5a3a;padding:2px 0;text-align:right;">Invoice No.</td><td style="text-align:right;padding:2px 0 2px 10px;font-weight:700;">${t.invoiceNo || ('(none — set one on the entry)')}</td></tr>
-          <tr><td style="color:#8a5a3a;padding:2px 0;text-align:right;">Invoice Date</td><td style="text-align:right;padding:2px 0 2px 10px;font-weight:700;">${dispDate(t.date)}</td></tr>
+          <tr><td style="color:#8a5a3a;padding:2px 0;text-align:right;">${noNoLabel}</td><td style="text-align:right;padding:2px 0 2px 10px;font-weight:700;">${t.invoiceNo || ('(none — set one on the entry)')}</td></tr>
+          <tr><td style="color:#8a5a3a;padding:2px 0;text-align:right;">${noDateLabel}</td><td style="text-align:right;padding:2px 0 2px 10px;font-weight:700;">${dispDate(t.date)}</td></tr>
+          ${isReturnDoc && t.refInvoiceNo ? `<tr><td style="color:#8a5a3a;padding:2px 0;text-align:right;">Against Invoice</td><td style="text-align:right;padding:2px 0 2px 10px;font-weight:700;">${t.refInvoiceNo}</td></tr>` : ''}
           ${placeOfSupply ? `<tr><td style="color:#8a5a3a;padding:2px 0;text-align:right;">Place of Supply</td><td style="text-align:right;padding:2px 0 2px 10px;font-weight:700;">${placeOfSupply}</td></tr>` : ''}
         </table>
       </div>
@@ -842,7 +855,7 @@ function openInvoice(txId){
           <tr style="border-top:1px solid #d9b8a0;"><td colspan="5" style="text-align:right;padding:3px 6px;">Subtotal</td><td style="text-align:right;padding:3px 6px;">${money(subtotal)}</td></tr>
           ${taxRows}
           <tr><td colspan="5" style="text-align:right;padding:3px 6px;">Round Off</td><td style="text-align:right;padding:3px 6px;">${money(roundOff)}</td></tr>
-          <tr style="border-top:2px solid #162660;font-weight:700;"><td colspan="5" style="text-align:right;padding:7px 6px;">TOTAL</td><td style="text-align:right;padding:7px 6px;font-size:20px;color:#162660;">${money(grand)}</td></tr>
+          <tr style="border-top:2px solid #162660;font-weight:700;"><td colspan="5" style="text-align:right;padding:7px 6px;">${t.docType==='credit-note' ? 'TOTAL CREDIT' : t.docType==='debit-note' ? 'TOTAL DEBIT' : 'TOTAL'}</td><td style="text-align:right;padding:7px 6px;font-size:20px;color:#162660;">${money(grand)}</td></tr>
         </tfoot>
       </table>
       <div style="margin-top:8px;font-size:15px;"><b>Rs.</b> ${numToWordsIndian(grand)} Rupees Only</div>
@@ -1821,6 +1834,7 @@ function renderGstTxTab(main, kind, title, subtitle, catGroup){
           const canReturn = !isReturnDoc && (kind==='sale' || kind==='purchase');
           const menuItems = [
             !isReturnDoc && kind==='sale' ? `<button data-inv="${t.id}">🖨 Invoice</button>` : '',
+            isReturnDoc && t.docType==='credit-note' ? `<button data-inv="${t.id}">🖨 Credit Note</button>` : '',
             canReturn ? `<button data-return="${t.id}" data-returnkind="${kind}">↩ ${kind==='sale'?'Sales':'Purchase'} return</button>` : '',
             btnLabel ? `<button data-mark="${t.id}">💰 ${btnLabel}</button>` : '',
             !isReturnDoc ? `<button data-edit="${t.id}">✎ Edit</button>` : '',
@@ -3407,6 +3421,15 @@ function renderSettings(main){
     </div>
 
     <div class="panel">
+      <h2>Sales / purchase return clean-up</h2>
+      <div class="field-note" style="margin-bottom:8px;">Sales and purchase returns entered before this version was applied never reduced the original invoice/bill's pending amount — so it can still show Pending or a wrong Payment Receivable/Payable figure even though a return was recorded against it. This tool re-checks every credit note / debit note on file and, if its original invoice/bill is still outstanding, writes off the returned amount against it (capped at whatever's still outstanding — never creates a refund or negative balance, matching how new returns behave now).</div>
+      <div class="row" style="gap:8px; flex-wrap:wrap;">
+        <button class="btn ghost small" id="fixOldReturnsBtn">🔁 Re-check &amp; fix existing sales/purchase returns</button>
+      </div>
+      <div class="field-note" style="margin-top:6px;">Safe to click more than once — it skips anything already written off, so it won't double-apply. Returns against an invoice that's already fully settled are correctly left untouched either way.</div>
+    </div>
+
+    <div class="panel">
       <h2>Invoice details <span class="tag">used on printed / PDF invoices</span></h2>
       <div class="settings-grid">
         <div><label>Business legal name (on invoice)</label><input id="invNameInput" value="${state.invoiceSettings.businessLegalName}"></div>
@@ -3702,6 +3725,33 @@ function renderSettings(main){
     state.transactions = state.transactions.filter(t=>!ids.has(t.id));
     save();
     toast(`Deleted ${targets.length} entr${targets.length===1?'y':'ies'} (${money(round2(total))}).`);
+    render();
+  });
+
+  document.getElementById('fixOldReturnsBtn').addEventListener('click', ()=>{
+    const returnDocs = state.transactions.filter(t=> (t.docType==='credit-note' || t.docType==='debit-note') && t.refTxId);
+    if(!returnDocs.length){ toast('No sales/purchase returns found on file.'); return; }
+    let fixedCount = 0, alreadyOkCount = 0, totalApplied = 0;
+    returnDocs.forEach(rt=>{
+      const orig = state.transactions.find(x=>x.id==rt.refTxId);
+      if(!orig) return;
+      const noun = rt.docType==='credit-note' ? 'Sales return' : 'Purchase return';
+      const expectedNote = `${noun} ${rt.invoiceNo||''}`;
+      const alreadyApplied = (orig.payments||[]).some(p=> p.note===expectedNote);
+      if(alreadyApplied){ alreadyOkCount++; return; }
+      const outstandingBefore = txOutstanding(orig);
+      if(outstandingBefore<=0.004){ alreadyOkCount++; return; } // already settled — Option B, leave untouched
+      const grossReturn = Math.abs(round2((rt.amount||0)+(rt.cgst||0)+(rt.sgst||0)+(rt.igst||0)));
+      const applyAmt = Math.min(grossReturn, outstandingBefore);
+      if(applyAmt>0.004){
+        if(!orig.payments) orig.payments = [];
+        orig.payments.push({ id: uid(), date: rt.date, amount:0, account:null, discount: applyAmt, note: expectedNote });
+        fixedCount++; totalApplied = round2(totalApplied+applyAmt);
+      }
+    });
+    if(fixedCount===0){ toast(`Checked ${returnDocs.length} return(s) — nothing needed fixing.`); return; }
+    save();
+    toast(`Fixed ${fixedCount} return(s) — ${money(totalApplied)} written off against their invoices/bills. ${alreadyOkCount} were already fine.`);
     render();
   });
 }
