@@ -1066,11 +1066,14 @@ function openMarkSettledModal(txId){
    Sales/Purchases and Output/Input GST for the period (stored as negative amounts so they net out
    correctly wherever sales/purchases are totalled, including the Trading Account), and is numbered
    manually since there's no fixed numbering scheme for credit/debit notes.
-   For a marketplace invoice, this never touches payment/receivable-or-payable status, since the
-   marketplace nets it against a future payout rather than an immediate refund into your own account —
-   same as before. For a local invoice/bill, the return amount is applied as a discount against the
-   original entry, reducing what's still outstanding (or, if it was already fully settled, this won't
-   create a negative balance — settle any actual cash refund separately via a payment entry). */
+   Whether the original invoice/bill still has anything outstanding decides what happens to its pending
+   status — same rule for every channel (Local GST/Cash or Marketplace):
+     - Still outstanding (nothing/partly received or paid): the return is applied as a write-off against
+       what's left outstanding, capped so it can never go negative — so a full return on a still-pending
+       invoice closes it (nothing left to collect), and a partial return reduces the pending amount.
+     - Already fully settled: the return does NOT touch payments or create a refund entry — no cash
+       actually moved in the books, so nothing here would be accurate. If money was genuinely refunded,
+       record that separately with a Journal Entry. */
 function openReturnModal(txId, kind){
   const orig = state.transactions.find(x=>x.id==txId);
   if(!orig){ toast('Original entry no longer exists.'); return; }
@@ -1080,7 +1083,7 @@ function openReturnModal(txId, kind){
   const noun = isSale ? 'Sales return' : 'Purchase return';
   const docType = isSale ? 'credit-note' : 'debit-note';
   const categoryConst = isSale ? CREDIT_NOTE_CATEGORY : PURCHASE_RETURN_CATEGORY;
-  const isMarketplace = (orig.saleChannel||'local-gst')==='marketplace';
+  const outstandingBefore = txOutstanding(orig);
   let modal = document.getElementById('partyModal');
   if(!modal){ modal = document.createElement('div'); modal.id='partyModal'; modal.className='party-modal'; document.body.appendChild(modal); }
 
@@ -1144,7 +1147,12 @@ function openReturnModal(txId, kind){
     cgst=round2(cgst); sgst=round2(sgst); igst=round2(igst);
     const total = round2(taxable+cgst+sgst+igst);
     if(taxable<=0) preview.textContent = 'Enter a returned quantity on at least one line.';
-    else preview.innerHTML = `${isSale?'Credit':'Debit'} taxable value ${money(taxable)} + GST ${money(cgst+sgst+igst)} = <b>${money(total)}</b> will reduce this period's ${isSale?'sales':'purchases'} and ${isSale?'Output':'Input'} GST${isMarketplace?'':`, and reduce what's ${isSale?'still owed to you':'still owed by you'} on the original ${isSale?'invoice':'bill'}`}.`;
+    else if(outstandingBefore>0.004){
+      const applyAmt = Math.min(total, outstandingBefore);
+      preview.innerHTML = `${isSale?'Credit':'Debit'} taxable value ${money(taxable)} + GST ${money(cgst+sgst+igst)} = <b>${money(total)}</b> will reduce this period's ${isSale?'sales':'purchases'} and ${isSale?'Output':'Input'} GST, and reduce what's ${isSale?'still owed to you':'still owed by you'} on the original ${isSale?'invoice':'bill'} by ${money(applyAmt)}${applyAmt<total?` (capped — only ${money(applyAmt)} was still outstanding)`:''}.`;
+    } else {
+      preview.innerHTML = `${isSale?'Credit':'Debit'} taxable value ${money(taxable)} + GST ${money(cgst+sgst+igst)} = <b>${money(total)}</b> will reduce this period's ${isSale?'sales':'purchases'} and ${isSale?'Output':'Input'} GST. This ${isSale?'invoice':'bill'} is already fully settled, so no refund entry will be created — record any actual money refunded separately with a Journal Entry.`;
+    }
   }
   qtyInputs.forEach(inp=>inp.addEventListener('input', updatePreview));
   updatePreview();
@@ -1192,16 +1200,18 @@ function openReturnModal(txId, kind){
       refTxId: orig.id, refInvoiceNo: orig.invoiceNo||''
     });
 
-    // For a local (non-marketplace) invoice/bill, apply the return as a discount against the original
-    // entry so it's reflected in what's still outstanding — same mechanism as a settlement-time discount.
-    if(!isMarketplace){
+    // Write off against what's still outstanding on the original invoice/bill — for every channel,
+    // capped so it can never push the balance negative. If it was already fully settled, outstandingBefore
+    // is 0, so nothing is pushed here at all (Option B — no auto-refund entry; journal it manually if needed).
+    const grossReturn = Math.abs(round2(amount+cgst+sgst+igst));
+    const applyAmt = Math.min(grossReturn, outstandingBefore);
+    if(applyAmt>0.004){
       if(!orig.payments) orig.payments = [];
-      const grossReturn = Math.abs(round2(amount+cgst+sgst+igst));
-      if(grossReturn>0) orig.payments.push({ id: uid(), date, amount: 0, account: null, discount: grossReturn, note: `${noun} ${refNo}` });
+      orig.payments.push({ id: uid(), date, amount: 0, account: null, discount: applyAmt, note: `${noun} ${refNo}` });
     }
 
     save(); modal.style.display='none';
-    toast(`${noun} saved — ${money(Math.abs(amount+cgst+sgst+igst))} reversed.`);
+    toast(`${noun} saved — ${money(grossReturn)} reversed${applyAmt>0.004 ? ` (${money(applyAmt)} written off the ${isSale?'receivable':'payable'})` : (outstandingBefore<=0.004 ? ' (already settled — no refund entry created)' : '')}.`);
     render();
   });
 }
@@ -1745,11 +1755,17 @@ function renderGstTxTab(main, kind, title, subtitle, catGroup){
               ${INDIA_STATE_LIST.map(s=>`<option value="${s}">${s}</option>`).join('')}
             </select>
           </div>` : ''}
+          ${kind==='sale' ? `<div id="receivedIntoField"><label>Received into</label>
+            <select name="receivedInto" id="receivedIntoSelect">
+              ${cashBankAccounts().map((a,idx)=>`<option value="${a.name}" ${idx===0?'selected':''}>${a.name}</option>`).join('')}
+              <option value="">Leave as pending (mark received later)</option>
+            </select>
+          </div>` : ''}
         </div>
         ${kind==='sale' ? `<div class="field-note" id="channelNote">Local GST/Cash invoices are numbered automatically in their own sequence. For Marketplace, type in the order/invoice number Amazon or Flipkart already assigned — it won't touch your local numbering.</div>` : ''}
         ${kind==='purchase' ? `<div class="field-note">Cash bills carry no GST — item lines lock to 0% automatically when this is set to Cash.</div>` : ''}
         ${kind==='sale' ? `<div class="field-note">For marketplace orders (Amazon, Flipkart, etc.), set this to the buyer's delivery state (shown on the order) — it decides CGST+SGST vs IGST, and lets you pull a state-wise sales summary below for GSTR-1 filing.</div>` : ''}
-        ${kind==='sale' ? `<div class="field-note">Payment mode isn't asked at entry time — the sale is tracked as pending until you mark it received (from the history table below), then you'll choose Cash or Bank.</div>` : ''}
+        ${kind==='sale' ? `<div class="field-note" id="receivedIntoNote">The invoice is marked settled immediately, into the account chosen above. Pick "Leave as pending" only if this sale hasn't actually been paid yet. Editing the invoice later never changes this.</div>` : ''}
         ${kind==='purchase' ? `<div class="field-note">Payment mode isn't asked at entry time — the purchase is tracked as pending (owed to the vendor) until you mark it paid (from the history table below), then you'll choose Cash or Bank.</div>` : ''}
 
         <div style="margin-top:16px;">
@@ -2135,7 +2151,22 @@ function renderGstTxTab(main, kind, title, subtitle, catGroup){
       // marketplace invoices are numbered by Amazon/Flipkart — never advance the local sequence
     }
     const grandTotal = amount+cgst+sgst+igst+roundOff;
-    save(); toast((kind==='sale') ? `Invoice saved — ${money(grandTotal)} pending receipt` : (kind==='purchase') ? `Bill saved — ${money(grandTotal)} pending payment` : `${title.replace(/s$/,'')} entry saved — ${money(grandTotal)}`);
+    // Sales settle automatically the moment they're saved (unless "Leave as pending" was chosen),
+    // by recording a full payment against the invoice right away — same mechanism as clicking
+    // "Mark received" later, just done immediately so the invoice never sits in Pending by default.
+    let settledMsg = '';
+    if(kind==='sale'){
+      const receivedInto = f.get('receivedInto');
+      if(receivedInto){
+        const savedTx = state.transactions.find(x=>x.id===id);
+        savedTx.payments = [{ id: uid(), date, amount: round2(grandTotal), account: receivedInto, discount: 0 }];
+        savedTx.account = receivedInto;
+        settledMsg = ` — settled into ${receivedInto}`;
+      } else {
+        settledMsg = ' — pending receipt';
+      }
+    }
+    save(); toast((kind==='sale') ? `Invoice saved — ${money(grandTotal)}${settledMsg}` : (kind==='purchase') ? `Bill saved — ${money(grandTotal)} pending payment` : `${title.replace(/s$/,'')} entry saved — ${money(grandTotal)}`);
     render();
   });
 
@@ -2210,6 +2241,12 @@ function renderGstTxTab(main, kind, title, subtitle, catGroup){
     updateLineCountNote(); updatePreview();
     document.getElementById('txSubmitBtn').textContent = `Update ${kind==='sale'?'invoice':'bill'}`;
     document.getElementById('cancelEditBtn').style.display = 'inline-flex';
+    // Editing never changes payment/settled status (see comment at save time), so this field is
+    // irrelevant while editing — hide it rather than let it imply editing could re-settle or re-open the invoice.
+    const receivedIntoField = document.getElementById('receivedIntoField');
+    const receivedIntoNote = document.getElementById('receivedIntoNote');
+    if(receivedIntoField) receivedIntoField.style.display = 'none';
+    if(receivedIntoNote) receivedIntoNote.textContent = "Editing doesn't change whether this invoice is settled or pending — use ⋯ → Mark received / Edit payment on the row for that.";
     document.getElementById('txForm').scrollIntoView && document.getElementById('txForm').scrollIntoView({behavior:'smooth', block:'start'});
   }
   document.getElementById('cancelEditBtn').addEventListener('click', ()=>{ editingId=null; render(); });
