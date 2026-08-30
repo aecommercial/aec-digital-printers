@@ -583,6 +583,7 @@ function itemFingerprint(f){
     (f.type||'').trim().toLowerCase(),
     (f.brand||'').trim().toLowerCase(),
     (f.color||'').trim().toLowerCase(),
+    round2(f.gsm||0),
     (f.unit||'').trim().toLowerCase(),
     round2(f.cost),
     round2(f.price)
@@ -1291,6 +1292,7 @@ function openItemEditModal(itemId){
         <div><label>Type</label><input id="imType" list="typeList" autocomplete="off" value="${item.type||''}"></div>
         <div><label>Brand</label><input id="imBrand" list="brandList" autocomplete="off" value="${item.brand||''}"></div>
         <div><label>Color</label><input id="imColor" list="colorList" autocomplete="off" value="${item.color||''}"></div>
+        <div><label>GSM</label><input id="imGsm" type="number" step="any" min="0" value="${item.gsm||''}"></div>
         <div><label>Unit</label><input id="imUnit" value="${item.unit||'pcs'}"></div>
         <div><label>Opening / on-hand qty</label><input id="imQty" type="number" step="any" value="${item.qty}"></div>
         <div><label>Unit price (${state.currency})</label><input id="imCost" type="number" step="any" min="0" value="${item.cost}"></div>
@@ -1344,6 +1346,7 @@ function openItemEditModal(itemId){
       name, type: document.getElementById('imType').value.trim(),
       brand: document.getElementById('imBrand').value.trim(),
       color: document.getElementById('imColor').value.trim(),
+      gsm: parseFloat(document.getElementById('imGsm').value)||0,
       unit: document.getElementById('imUnit').value.trim()||'pcs',
       cost: parseFloat(document.getElementById('imCost').value)||0,
       price: parseFloat(document.getElementById('imPrice').value)||0
@@ -1390,7 +1393,13 @@ function renderDashboard(main){
   const todayTx = state.transactions.filter(t=>isToday(t.date));
   const todayIn = todayTx.filter(t=>t.flow==='in').reduce((s,t)=>s+txTotal(t),0);
   const todayOut = todayTx.filter(t=>t.flow==='out').reduce((s,t)=>s+txTotal(t),0);
-  const cash = cashBankAccounts().reduce((s,a)=>s+assetBalance(a.name),0);
+  // Cash In Hand and HDFC Bank get their own dashboard cards; every other cash/bank account is grouped
+  // into one combined card, with each account's name listed underneath it.
+  const PINNED_CASH_ACCOUNTS = ['Cash In Hand', 'HDFC Bank'];
+  const cashInHandBal = assetBalance('Cash In Hand');
+  const hdfcBankBal = assetBalance('HDFC Bank');
+  const otherCashAccounts = cashBankAccounts().filter(a=>!PINNED_CASH_ACCOUNTS.includes(a.name));
+  const otherCashTotal = otherCashAccounts.reduce((s,a)=>s+assetBalance(a.name),0);
 
   main.innerHTML = `
     <div class="topbar">
@@ -1402,7 +1411,9 @@ function renderDashboard(main){
       <div class="card ${expM>incM?'bad':''}"><div class="label">Expenses — this month</div><div class="value num">${money(expM)}</div><div class="foot">Purchases + expenses</div></div>
       <div class="card ${profM<0?'bad':''}"><div class="label">Net profit — this month</div><div class="value num">${money(profM)}</div><div class="foot">${profM<0?'Running at a loss':'Running a profit'}</div></div>
       <div class="card"><div class="label">Today · In / Out</div><div class="value num">${money(todayIn)} <span class="muted" style="font-size:15px;">/ ${money(todayOut)}</span></div><div class="foot">${todayTx.length} entries logged today</div></div>
-      <div class="card ${cash<0?'bad':''}"><div class="label">Cash + Bank balance</div><div class="value num">${money(cash)}</div><div class="foot">Across ${cashBankAccounts().length} account(s) · excludes pending receivables</div></div>
+      <div class="card ${cashInHandBal<0?'bad':''}"><div class="label">Cash In Hand</div><div class="value num">${money(cashInHandBal)}</div><div class="foot">Excludes pending receivables</div></div>
+      <div class="card ${hdfcBankBal<0?'bad':''}"><div class="label">HDFC Bank</div><div class="value num">${money(hdfcBankBal)}</div><div class="foot">Excludes pending receivables</div></div>
+      <div class="card ${otherCashTotal<0?'bad':''}"><div class="label">Other accounts</div><div class="value num">${money(otherCashTotal)}</div><div class="foot">${otherCashAccounts.length ? otherCashAccounts.map(a=>a.name).join(', ') : 'No other cash/bank accounts'}</div></div>
       <div class="card amber"><div class="label">Inventory value</div><div class="value num">${money(inventoryValue())}</div><div class="foot">${state.inventoryItems.length} item(s) · ${inventoryUnits()} unit(s) on hand</div></div>
     </div>
     <div class="two-col">
@@ -2357,6 +2368,7 @@ function renderInventory(main){
         <div><label>Type</label><input name="type" list="typeList" placeholder="e.g. Stationery" autocomplete="off"></div>
         <div><label>Brand</label><input name="brand" list="brandList" placeholder="e.g. Classmate" autocomplete="off"></div>
         <div><label>Color</label><input name="color" list="colorList" placeholder="e.g. Blue" autocomplete="off"></div>
+        <div><label>GSM</label><input name="gsm" type="number" step="any" min="0" placeholder="e.g. 100"></div>
         <div><label>Unit</label><input name="unit" placeholder="pcs, kg, box…" value="pcs"></div>
         <div><label>Opening qty</label><input name="qty" type="number" step="any" value="0" required></div>
         <div><label>Unit price (${state.currency})</label><input name="cost" type="number" step="any" min="0" value="0" required></div>
@@ -2380,7 +2392,7 @@ function renderInventory(main){
         <thead><tr><th></th><th>Item</th><th>Unit</th><th class="num">Qty on hand</th><th class="num">Unit price</th><th class="num">Sale price</th><th class="num">Value</th><th></th></tr></thead>
         <tbody id="invItemsBody">${items.length ? items.map(i=>{
           const thumb = (i.photos && i.photos.length) ? `<img src="${i.photos[0]}" data-viewphotos="${i.id}" style="width:36px;height:36px;object-fit:cover;border-radius:4px;border:1px solid #ddd;cursor:pointer;" title="${i.photos.length} photo(s) — click to view">` : '';
-          const subline = [i.type, i.brand, i.color].filter(Boolean).join(' • ');
+          const subline = [i.type, i.brand, i.color, i.gsm?`${i.gsm} GSM`:''].filter(Boolean).join(' • ');
           return `<tr data-item-row data-name="${(i.name||'').toLowerCase().replace(/"/g,'&quot;')}" data-type="${(i.type||'').toLowerCase().replace(/"/g,'&quot;')}"><td style="width:44px;">${thumb}</td><td>${i.name}${subline?`<div class="muted" style="font-size:10.5px;">${subline}</div>`:''}</td><td class="muted">${i.unit||'pcs'}</td>
           <td class="num">${fmt(i.qty)}</td><td class="num">${money(i.cost)}</td><td class="num">${money(i.price||0)}</td><td class="num">${money(itemValue(i))}</td>
           <td><button class="btn ghost small" data-edititem="${i.id}" style="margin-right:4px;">✎ Edit</button><button class="btn ghost small" data-rmitem="${i.id}">Delete</button></td></tr>`;
@@ -2435,7 +2447,7 @@ function renderInventory(main){
     const f = new FormData(e.target);
     const name = f.get('name').trim();
     if(!name) return;
-    const candidate = { name, type: f.get('type').trim(), brand: f.get('brand').trim(), color: f.get('color').trim(), unit: f.get('unit').trim()||'pcs', cost: parseFloat(f.get('cost'))||0, price: parseFloat(f.get('price'))||0 };
+    const candidate = { name, type: f.get('type').trim(), brand: f.get('brand').trim(), color: f.get('color').trim(), gsm: f.get('gsm')?parseFloat(f.get('gsm'))||0:0, unit: f.get('unit').trim()||'pcs', cost: parseFloat(f.get('cost'))||0, price: parseFloat(f.get('price'))||0 };
     if(state.inventoryItems.some(i=>itemFingerprint(i)===itemFingerprint(candidate))){ toast('An identical item (same name and same details) already exists.'); return; }
     const photoInput = document.getElementById('itemPhotos');
     const files = photoInput && photoInput.files ? [...photoInput.files].slice(0,2) : [];
@@ -2923,6 +2935,10 @@ function renderReports(main){
       <summary><h2>Balance Sheet <span class="tag">As of today</span></h2></summary>
       <div class="report-collapse-body">${renderBalanceSheet()}</div>
     </details>
+    ${['Cash In Hand','HDFC Bank'].filter(n=>findAcc('asset',n)).map(n=>`<details class="panel report-collapse">
+      <summary><h2>${n} <span class="tag">${rangeLabel(reportRange)} · reconcile with your ${/bank/i.test(n)?'bank statement':'cash register'}</span></h2></summary>
+      <div class="report-collapse-body">${renderAccountLedger(n)}</div>
+    </details>`).join('')}
     <details class="panel report-collapse">
       <summary><h2>GST Summary <span class="tag">${rangeLabel(reportRange)} · for GSTR filing</span></h2></summary>
       <div class="report-collapse-body">${renderGstSummary()}</div>
@@ -2950,10 +2966,6 @@ function renderReports(main){
         <div id="ledgerResult"><div class="empty">Choose a title above to see its entries.</div></div>
       </div>
     </details>
-    <div id="ledgerWrap">${cashBankAccounts().map(a=>`<details class="panel report-collapse">
-      <summary><h2>${a.name} <span class="tag">${rangeLabel(reportRange)} · reconcile with your ${/bank/i.test(a.name)?'bank statement':'cash register'}</span></h2></summary>
-      <div class="report-collapse-body">${renderAccountLedger(a.name)}</div>
-    </details>`).join('')}</div>
     <div class="panel">
       <button class="btn ghost" id="exportExcelBtn">⬇ Export full workbook (.xlsx) — for your accountant</button>
     </div>
@@ -2975,7 +2987,7 @@ function renderReports(main){
   });
   document.getElementById('exportExcelBtn').addEventListener('click', exportExcel);
 
-  document.getElementById('ledgerWrap').addEventListener('click', e=>{
+  main.addEventListener('click', e=>{
     const ed = e.target.closest('[data-lgedit]'); if(ed){ editLedgerRow(ed.dataset.lgedit); return; }
     const del = e.target.closest('[data-lgdel]'); if(del){ deleteLedgerRow(del.dataset.lgdel); return; }
   });
@@ -3265,7 +3277,7 @@ function exportExcel(){
   })();
   if(stateRows.length) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(stateRows), 'State-wise Sales');
   if(state.inventoryItems.length){
-    const invRows = state.inventoryItems.map(i=>({Item:i.name, Type:i.type||'', Brand:i.brand||'', Color:i.color||'', Unit:i.unit, 'Qty on hand':i.qty, 'Unit price':i.cost, 'Sale price':i.price||0, Value:itemValue(i)}));
+    const invRows = state.inventoryItems.map(i=>({Item:i.name, Type:i.type||'', Brand:i.brand||'', Color:i.color||'', GSM:i.gsm||'', Unit:i.unit, 'Qty on hand':i.qty, 'Unit price':i.cost, 'Sale price':i.price||0, Value:itemValue(i)}));
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(invRows), 'Inventory');
     const moveRows = state.inventoryMovements.map(m=>({Date:dispDate(m.date), Item:(findItem(m.itemId)||{}).name||'', Type:m.type, Qty:m.qty, Note:m.note}));
     if(moveRows.length) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(moveRows), 'Stock Movements');
@@ -3619,25 +3631,6 @@ function renderSettings(main){
     </div>
 
     <div class="panel">
-      <h2>Marketplace fee clean-up</h2>
-      <div class="field-note" style="margin-bottom:8px;">Amazon/marketplace fees are now logged purely through the Journal Entry tab, as their own Expense entries — Mark Received no longer touches them. Use the tools below to clean up entries left over from earlier approaches.</div>
-      <div class="row" style="gap:8px; flex-wrap:wrap;">
-        <button class="btn ghost small" id="migrateFeeBtn">🔁 Convert old fee-holding-account entries to expenses</button>
-        <button class="btn danger small" id="deleteAmzFeeBtn">🗑 Delete all Amazon Fees / Amazon Shipping Fee entries</button>
-      </div>
-      <div class="field-note" style="margin-top:6px;">The convert tool is for entries that used to sit in a separate "fees holding" account. The delete tool removes any existing "Amazon Fees" / "Amazon Shipping Fee" expense entries entirely, so you can log them fresh from the Journal Entry tab.</div>
-    </div>
-
-    <div class="panel">
-      <h2>Sales / purchase return clean-up</h2>
-      <div class="field-note" style="margin-bottom:8px;">Sales and purchase returns entered before this version was applied never reduced the original invoice/bill's pending amount — so it can still show Pending or a wrong Payment Receivable/Payable figure even though a return was recorded against it. This tool re-checks every credit note / debit note on file and, if its original invoice/bill is still outstanding, writes off the returned amount against it (capped at whatever's still outstanding — never creates a refund or negative balance, matching how new returns behave now).</div>
-      <div class="row" style="gap:8px; flex-wrap:wrap;">
-        <button class="btn ghost small" id="fixOldReturnsBtn">🔁 Re-check &amp; fix existing sales/purchase returns</button>
-      </div>
-      <div class="field-note" style="margin-top:6px;">Safe to click more than once — it skips anything already written off, so it won't double-apply. Returns against an invoice that's already fully settled are correctly left untouched either way.</div>
-    </div>
-
-    <div class="panel">
       <h2>Invoice details <span class="tag">used on printed / PDF invoices</span></h2>
       <div class="settings-grid">
         <div><label>Business legal name (on invoice)</label><input id="invNameInput" value="${state.invoiceSettings.businessLegalName}"></div>
@@ -3893,74 +3886,6 @@ function renderSettings(main){
   document.getElementById('resetBtn').addEventListener('click', ()=>{
     if(!confirm('This erases everything and starts a brand-new business ledger. This cannot be undone. Continue?')) return;
     state = seedState(); save(); toast('Starting fresh.'); render();
-  });
-
-  document.getElementById('migrateFeeBtn').addEventListener('click', ()=>{
-    const namesRaw = prompt('Which account(s) were used to hold Amazon/marketplace fees? Comma-separate if more than one — must match the account name exactly (e.g. "Amazon Fees Holding"):');
-    if(!namesRaw || !namesRaw.trim()) return;
-    const holdingNames = namesRaw.split(',').map(s=>s.trim().toLowerCase()).filter(Boolean);
-    const bankOptions = cashBankAccounts().filter(a=>!holdingNames.includes(a.name.toLowerCase()));
-    if(!bankOptions.length){ toast('No real bank/cash account left to move these into.'); return; }
-    const realAccount = prompt(`Which account should these amounts be treated as received into (your real bank)? Options: ${bankOptions.map(a=>a.name).join(', ')}`, bankOptions[0].name);
-    if(!realAccount || !bankOptions.some(a=>a.name===realAccount.trim())){ toast('Enter one of the listed account names exactly.'); return; }
-    const category = (prompt('Expense category to file these under:', 'Amazon Fees')||'Amazon Fees').trim() || 'Amazon Fees';
-
-    let count = 0, total = 0;
-    state.transactions.forEach(t=>{
-      if((t.kind==='sale'||t.kind==='purchase') && t.payments){
-        t.payments.forEach(p=>{
-          if(p.account && holdingNames.includes(p.account.toLowerCase()) && p.amount>0){
-            state.transactions.push({ id:uid(), date:p.date||t.date, kind:'expense', category, amount:round2(p.amount), account:realAccount.trim(), description:`Marketplace fee — ${t.invoiceNo||t.description||''}`, flow:'out' });
-            p.account = realAccount.trim();
-            count++; total += p.amount;
-          }
-        });
-      }
-    });
-    if(count===0){ toast('No payments found on that account name — check the spelling and try again.'); return; }
-    if(!state.categories.expense.includes(category)) state.categories.expense.push(category);
-    save();
-    toast(`Converted ${count} entr${count===1?'y':'ies'} (${money(round2(total))}) into "${category}" expense entries.`);
-    render();
-  });
-
-  document.getElementById('deleteAmzFeeBtn').addEventListener('click', ()=>{
-    const targets = state.transactions.filter(t=> t.kind==='expense' && (t.category==='Amazon Fees' || t.category==='Amazon Shipping Fee'));
-    if(!targets.length){ toast('No Amazon Fees / Amazon Shipping Fee entries found.'); return; }
-    const total = targets.reduce((s,t)=>s+(Number(t.amount)||0),0);
-    if(!confirm(`Delete ${targets.length} entr${targets.length===1?'y':'ies'} totalling ${money(round2(total))} under "Amazon Fees" / "Amazon Shipping Fee"? This can't be undone — invoices themselves are untouched.`)) return;
-    const ids = new Set(targets.map(t=>t.id));
-    state.transactions = state.transactions.filter(t=>!ids.has(t.id));
-    save();
-    toast(`Deleted ${targets.length} entr${targets.length===1?'y':'ies'} (${money(round2(total))}).`);
-    render();
-  });
-
-  document.getElementById('fixOldReturnsBtn').addEventListener('click', ()=>{
-    const returnDocs = state.transactions.filter(t=> (t.docType==='credit-note' || t.docType==='debit-note') && t.refTxId);
-    if(!returnDocs.length){ toast('No sales/purchase returns found on file.'); return; }
-    let fixedCount = 0, alreadyOkCount = 0, totalApplied = 0;
-    returnDocs.forEach(rt=>{
-      const orig = state.transactions.find(x=>x.id==rt.refTxId);
-      if(!orig) return;
-      const noun = rt.docType==='credit-note' ? 'Sales return' : 'Purchase return';
-      const expectedNote = `${noun} ${rt.invoiceNo||''}`;
-      const alreadyApplied = (orig.payments||[]).some(p=> p.note===expectedNote);
-      if(alreadyApplied){ alreadyOkCount++; return; }
-      const outstandingBefore = txOutstanding(orig);
-      if(outstandingBefore<=0.004){ alreadyOkCount++; return; } // already settled — Option B, leave untouched
-      const grossReturn = Math.abs(round2((rt.amount||0)+(rt.cgst||0)+(rt.sgst||0)+(rt.igst||0)));
-      const applyAmt = Math.min(grossReturn, outstandingBefore);
-      if(applyAmt>0.004){
-        if(!orig.payments) orig.payments = [];
-        orig.payments.push({ id: uid(), date: rt.date, amount:0, account:null, discount: applyAmt, note: expectedNote });
-        fixedCount++; totalApplied = round2(totalApplied+applyAmt);
-      }
-    });
-    if(fixedCount===0){ toast(`Checked ${returnDocs.length} return(s) — nothing needed fixing.`); return; }
-    save();
-    toast(`Fixed ${fixedCount} return(s) — ${money(totalApplied)} written off against their invoices/bills. ${alreadyOkCount} were already fine.`);
-    render();
   });
 }
 
