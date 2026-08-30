@@ -9,21 +9,22 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://accounts.google.com/gsi/client" async defer></script>
 <link rel="manifest" href="manifest.json">
-<meta name="theme-color" content="#1C7C68">
+<meta name="theme-color" content="#6B84D1">
 <style>
   :root{
-    --paper:#F6F4EE;
-    --ink:#16213E;
-    --ink-soft:#5B6478;
-    --rule:#DCD9CE;
-    --accent:#1C7C68;
-    --accent-soft:#DFEEE9;
-    --amber:#C98A2C;
-    --amber-soft:#F5E9D5;
-    --bad:#B23A48;
-    --bad-soft:#F6E1E3;
+    --paper:#F9F8FC;
+    --ink:#3F3B54;
+    --ink-soft:#837FA0;
+    --rule:#E6E1F2;
+    --accent:#6B84D1;
+    --accent-soft:#E7ECFB;
+    --amber:#C99A4E;
+    --amber-soft:#FBF1DE;
+    --bad:#D97A93;
+    --bad-soft:#FBE9EE;
+    --good:#6FA88C;
     --card:#FFFFFF;
-    --shadow:0 1px 2px rgba(22,33,62,.06), 0 6px 18px rgba(22,33,62,.07);
+    --shadow:0 1px 2px rgba(63,59,84,.06), 0 6px 18px rgba(63,59,84,.07);
     --radius:10px;
   }
   *{box-sizing:border-box;}
@@ -65,6 +66,18 @@
   .panel h2 .tag{ font-family:'Inter',sans-serif; font-size:10.5px; font-weight:600; text-transform:uppercase; letter-spacing:.7px; color:var(--accent); background:var(--accent-soft); padding:3px 8px; border-radius:20px;}
   .two-col{ display:grid; grid-template-columns:1.2fr 1fr; gap:18px; align-items:start;}
   @media (max-width:920px){ .two-col{ grid-template-columns:1fr;} main{padding:20px 14px 50px;} .app{flex-direction:column;} .sidebar{width:100%; height:auto; position:relative; flex-direction:row; flex-wrap:wrap;} nav{flex-direction:row; flex-wrap:wrap;} .side-foot,.biz{display:none;} }
+  /* Horizontal "T-account" layout for Trading Account / P&L / Balance Sheet — two sides shown
+     side-by-side (Dr | Cr, or Assets | Capital & Liabilities). Collapses to stacked on narrow
+     screens, same breakpoint as .two-col, so it stays usable on mobile. */
+  .t-format{ display:grid; grid-template-columns:1fr 1fr; gap:0 24px; align-items:start;}
+  .t-format .t-side{ min-width:0;}
+  .t-format .t-side.t-right{ border-left:1px solid var(--rule); padding-left:24px;}
+  @media (max-width:920px){ .t-format{ grid-template-columns:1fr; gap:20px 0;} .t-format .t-side.t-right{ border-left:none; padding-left:0; border-top:1px solid var(--rule); padding-top:16px;} }
+  .t-format table{ width:100%; border-collapse:collapse; font-size:13px;}
+  .t-format thead th{ text-align:left; font-size:10.5px; text-transform:uppercase; letter-spacing:.5px; color:var(--ink-soft); padding:4px 6px; font-weight:600; border-bottom:1px solid var(--rule);}
+  .t-format thead th.num{ text-align:right;}
+  .t-format tbody td{ padding:6px; border-bottom:1px dashed var(--rule);}
+  .t-format tfoot td{ padding:7px 6px; border-top:2px solid var(--ink); font-weight:700;}
 
   table{ width:100%; border-collapse:collapse; font-size:13px;}
   thead th{ text-align:left; font-size:10.5px; text-transform:uppercase; letter-spacing:.6px; color:var(--ink-soft); border-bottom:1px solid var(--rule); padding:7px 8px; font-weight:600;}
@@ -123,6 +136,18 @@
   .tabs-sub{ display:flex; gap:6px; margin-bottom:14px;}
   .tabs-sub button{ all:unset; cursor:pointer; padding:7px 14px; border-radius:20px; font-size:12.5px; font-weight:600; color:var(--ink-soft); border:1px solid var(--rule);}
   .tabs-sub button.active{ background:var(--ink); color:#fff; border-color:var(--ink);}
+
+  /* Collapsible Reports panels — <details>/<summary> wrapping an existing .panel, closed by default;
+     clicking the heading (the summary) expands it. Scoped to .report-collapse only, so ordinary .panel
+     usage elsewhere in the app (Dashboard, Sales, Settings, etc.) is untouched. */
+  details.report-collapse{ padding:0;}
+  details.report-collapse > summary{ list-style:none; cursor:pointer; padding:22px 24px;}
+  details.report-collapse > summary::-webkit-details-marker{ display:none;}
+  details.report-collapse > summary h2{ margin:0; display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap;}
+  details.report-collapse > summary h2::before{ content:'▸'; display:inline-block; margin-right:8px; color:var(--ink-soft); font-size:13px; transition:transform .15s;}
+  details.report-collapse[open] > summary h2::before{ transform:rotate(90deg);}
+  details.report-collapse > summary:hover{ background:#FBFAF6;}
+  details.report-collapse > .report-collapse-body{ padding:0 24px 22px;}
 
   .inv-modal{ display:none; position:fixed; inset:0; background:rgba(22,33,62,.6); z-index:200; align-items:flex-start; justify-content:center; overflow:auto; padding:26px 16px;}
   @page { size: A4; margin: 0; }
@@ -511,10 +536,19 @@ function assetBalance(name){
   });
   return bal;
 }
+/* A liability account's balance is normally driven by purchase bills against it (Accounts Payable),
+   but now that Liability accounts are also selectable in a Journal Entry Fund Transfer (contra) — e.g.
+   a loan repayment out of Bank, or a fresh loan received into Bank — a contra can move it too, same
+   mechanism as Asset/Equity accounts below. */
 function liabilityBalance(name){
   const acc = findAcc('liability', name); if(!acc) return 0;
   let bal = acc.opening;
   state.transactions.forEach(t=>{
+    if(t.kind==='contra'){
+      if(t.fromAccount===name) bal -= (Number(t.amount)||0);
+      if(t.toAccount===name) bal += (Number(t.amount)||0);
+      return;
+    }
     if(t.kind!=='purchase') return;
     if(t.payments){
       if(name===PAYABLE_ACCOUNT){ const out=txOutstanding(t); if(out>0.004) bal+=out; }
@@ -547,6 +581,8 @@ function itemFingerprint(f){
   return [
     (f.name||'').trim().toLowerCase(),
     (f.type||'').trim().toLowerCase(),
+    (f.brand||'').trim().toLowerCase(),
+    (f.color||'').trim().toLowerCase(),
     (f.unit||'').trim().toLowerCase(),
     round2(f.cost),
     round2(f.price)
@@ -1253,6 +1289,8 @@ function openItemEditModal(itemId){
       <div class="im-grid">
         <div class="span2"><label>Item name</label><input id="imName" value="${item.name}"></div>
         <div><label>Type</label><input id="imType" list="typeList" autocomplete="off" value="${item.type||''}"></div>
+        <div><label>Brand</label><input id="imBrand" list="brandList" autocomplete="off" value="${item.brand||''}"></div>
+        <div><label>Color</label><input id="imColor" list="colorList" autocomplete="off" value="${item.color||''}"></div>
         <div><label>Unit</label><input id="imUnit" value="${item.unit||'pcs'}"></div>
         <div><label>Opening / on-hand qty</label><input id="imQty" type="number" step="any" value="${item.qty}"></div>
         <div><label>Unit price (${state.currency})</label><input id="imCost" type="number" step="any" min="0" value="${item.cost}"></div>
@@ -1304,6 +1342,8 @@ function openItemEditModal(itemId){
     if(!name){ toast('Enter an item name.'); return; }
     const candidate = {
       name, type: document.getElementById('imType').value.trim(),
+      brand: document.getElementById('imBrand').value.trim(),
+      color: document.getElementById('imColor').value.trim(),
       unit: document.getElementById('imUnit').value.trim()||'pcs',
       cost: parseFloat(document.getElementById('imCost').value)||0,
       price: parseFloat(document.getElementById('imPrice').value)||0
@@ -1527,12 +1567,24 @@ function renderGeneralEntryTab(main){
           <select name="account">${cashBankAccounts().map(a=>`<option value="${a.name}">${a.name}</option>`).join('')}</select>
         </div>
         <div id="fromAcctField" style="display:none;"><label>Transfer from</label>
-          <select name="fromAccount">${state.accounts.asset.map(a=>`<option value="${a.name}">${a.name}</option>`).join('')}${state.accounts.equity.map(a=>`<option value="${a.name}">${a.name} (equity)</option>`).join('')}</select>
+          <select name="fromAccount">
+            <optgroup label="Assets">${state.accounts.asset.map(a=>`<option value="${a.name}">${a.name}</option>`).join('')}</optgroup>
+            <optgroup label="Liabilities">${state.accounts.liability.map(a=>`<option value="${a.name}">${a.name}</option>`).join('')}</optgroup>
+            <optgroup label="Equity">${state.accounts.equity.map(a=>`<option value="${a.name}">${a.name}</option>`).join('')}</optgroup>
+            <optgroup label="Income titles">${state.categories.income.map(c=>`<option value="${c}">${c}</option>`).join('')}</optgroup>
+            <optgroup label="Expense titles">${state.categories.expense.map(c=>`<option value="${c}">${c}</option>`).join('')}</optgroup>
+          </select>
         </div>
         <div id="toAcctField" style="display:none;"><label>Transfer to</label>
-          <select name="toAccount">${state.accounts.asset.map(a=>`<option value="${a.name}">${a.name}</option>`).join('')}${state.accounts.equity.map(a=>`<option value="${a.name}">${a.name} (equity)</option>`).join('')}</select>
+          <select name="toAccount">
+            <optgroup label="Assets">${state.accounts.asset.map(a=>`<option value="${a.name}">${a.name}</option>`).join('')}</optgroup>
+            <optgroup label="Liabilities">${state.accounts.liability.map(a=>`<option value="${a.name}">${a.name}</option>`).join('')}</optgroup>
+            <optgroup label="Equity">${state.accounts.equity.map(a=>`<option value="${a.name}">${a.name}</option>`).join('')}</optgroup>
+            <optgroup label="Income titles">${state.categories.income.map(c=>`<option value="${c}">${c}</option>`).join('')}</optgroup>
+            <optgroup label="Expense titles">${state.categories.expense.map(c=>`<option value="${c}">${c}</option>`).join('')}</optgroup>
+          </select>
         </div>
-        <div class="field-note">Tip: a transfer from Bank/Cash to Owner's Capital records a drawing; from Owner's Capital to Bank/Cash records a capital top-up.</div>
+        <div class="field-note">Tip: a transfer from Bank/Cash to Owner's Capital records a drawing; from Owner's Capital to Bank/Cash records a capital top-up. You can also pick an Income title as "Transfer from" (records it as income into the Asset account on the other side) or an Expense title as "Transfer to" (records it as an expense paid from the Asset account on the other side) — those are logged as a normal Income/Expense entry, not a transfer. Liability and Equity accounts can only be used for a plain transfer, paired with another real account.</div>
         <div><label>Description (optional)</label><input name="description" placeholder="Note / party name"></div>
         <div><button class="btn primary" type="submit" id="txSubmitBtn">Save entry</button> <button class="btn ghost" type="button" id="cancelEditBtn" style="display:none;">Cancel edit</button></div>
       </form>
@@ -1613,10 +1665,45 @@ function renderGeneralEntryTab(main){
       const toAccount = f.get('toAccount');
       if(!fromAccount || !toAccount){ toast('Choose both accounts.'); return; }
       if(fromAccount===toAccount){ toast('Transfer from and Transfer to must be different accounts.'); return; }
+      const isRealAccount = (name)=> state.accounts.asset.some(a=>a.name===name) || state.accounts.liability.some(a=>a.name===name) || state.accounts.equity.some(a=>a.name===name);
+      const isAssetAccount = (name)=> state.accounts.asset.some(a=>a.name===name);
+      const isIncomeCat = (name)=> state.categories.income.includes(name);
+      const isExpenseCat = (name)=> state.categories.expense.includes(name);
+      // Contra (Fund Transfer) is strictly between real ledger accounts — Asset, Liability, or Equity —
+      // never a category. Picking an Income title as "from" or an Expense title as "to" isn't a transfer
+      // at all — it's really an Income/Expense entry, so it's routed and saved as one instead, same as if
+      // it had been entered directly from Sales/Purchases/an Income-Expense entry — but only when paired
+      // with a real Asset account (Cash/Bank/etc.) on the other side, since that's the only side where
+      // money is actually received or spent; Liability/Equity accounts stay contra-only.
+      let routed = null;
+      if(isRealAccount(fromAccount) && isRealAccount(toAccount)){
+        routed = null;
+      } else if(isIncomeCat(fromAccount) && isAssetAccount(toAccount)){
+        routed = { kind:'income', category: fromAccount, account: toAccount, flow:'in' };
+      } else if(isExpenseCat(toAccount) && isAssetAccount(fromAccount)){
+        routed = { kind:'expense', category: toAccount, account: fromAccount, flow:'out' };
+      } else {
+        toast('Pick a real Asset account (Cash/Bank/etc.) on one side when using an Income or Expense title. For a plain transfer, pick a real account (Asset/Liability/Equity) on both sides.');
+        return;
+      }
       if(editingId){
         const t = state.transactions.find(x=>x.id==editingId);
-        if(t){ t.kind='contra'; t.date=f.get('date')||todayISO(); t.fromAccount=fromAccount; t.toAccount=toAccount; t.amount=amount; t.description=f.get('description')||''; delete t.category; delete t.account; delete t.flow; }
+        if(t){
+          if(routed){
+            t.kind=routed.kind; t.date=f.get('date')||todayISO(); t.category=routed.category; t.account=routed.account; t.amount=amount; t.description=f.get('description')||''; t.flow=routed.flow;
+            delete t.fromAccount; delete t.toAccount;
+          } else {
+            t.kind='contra'; t.date=f.get('date')||todayISO(); t.fromAccount=fromAccount; t.toAccount=toAccount; t.amount=amount; t.description=f.get('description')||'';
+            delete t.category; delete t.account; delete t.flow;
+          }
+        }
         save(); toast('Entry updated.'); editingId=null; render();
+        return;
+      }
+      if(routed){
+        state.transactions.push({ id: uid(), date: f.get('date')||todayISO(), kind: routed.kind, category: routed.category, amount, account: routed.account, description: f.get('description')||'', flow: routed.flow });
+        save(); toast(`${routed.kind==='income'?'Income':'Expense'} entry saved — ${money(amount)} (${routed.category}).`);
+        render();
         return;
       }
       state.transactions.push({
@@ -1768,17 +1855,11 @@ function renderGstTxTab(main, kind, title, subtitle, catGroup){
               ${INDIA_STATE_LIST.map(s=>`<option value="${s}">${s}</option>`).join('')}
             </select>
           </div>` : ''}
-          ${kind==='sale' ? `<div id="receivedIntoField"><label>Received into</label>
-            <select name="receivedInto" id="receivedIntoSelect">
-              ${cashBankAccounts().map((a,idx)=>`<option value="${a.name}" ${idx===0?'selected':''}>${a.name}</option>`).join('')}
-              <option value="">Leave as pending (mark received later)</option>
-            </select>
-          </div>` : ''}
         </div>
         ${kind==='sale' ? `<div class="field-note" id="channelNote">Local GST/Cash invoices are numbered automatically in their own sequence. For Marketplace, type in the order/invoice number Amazon or Flipkart already assigned — it won't touch your local numbering.</div>` : ''}
         ${kind==='purchase' ? `<div class="field-note">Cash bills carry no GST — item lines lock to 0% automatically when this is set to Cash.</div>` : ''}
         ${kind==='sale' ? `<div class="field-note">For marketplace orders (Amazon, Flipkart, etc.), set this to the buyer's delivery state (shown on the order) — it decides CGST+SGST vs IGST, and lets you pull a state-wise sales summary below for GSTR-1 filing.</div>` : ''}
-        ${kind==='sale' ? `<div class="field-note" id="receivedIntoNote">The invoice is marked settled immediately, into the account chosen above. Pick "Leave as pending" only if this sale hasn't actually been paid yet. Editing the invoice later never changes this.</div>` : ''}
+        ${kind==='sale' ? `<div class="field-note">Payment mode isn't asked at entry time — the sale is tracked as pending until you mark it received (from the history table below), then you'll choose Cash or Bank.</div>` : ''}
         ${kind==='purchase' ? `<div class="field-note">Payment mode isn't asked at entry time — the purchase is tracked as pending (owed to the vendor) until you mark it paid (from the history table below), then you'll choose Cash or Bank.</div>` : ''}
 
         <div style="margin-top:16px;">
@@ -2165,22 +2246,7 @@ function renderGstTxTab(main, kind, title, subtitle, catGroup){
       // marketplace invoices are numbered by Amazon/Flipkart — never advance the local sequence
     }
     const grandTotal = amount+cgst+sgst+igst+roundOff;
-    // Sales settle automatically the moment they're saved (unless "Leave as pending" was chosen),
-    // by recording a full payment against the invoice right away — same mechanism as clicking
-    // "Mark received" later, just done immediately so the invoice never sits in Pending by default.
-    let settledMsg = '';
-    if(kind==='sale'){
-      const receivedInto = f.get('receivedInto');
-      if(receivedInto){
-        const savedTx = state.transactions.find(x=>x.id===id);
-        savedTx.payments = [{ id: uid(), date, amount: round2(grandTotal), account: receivedInto, discount: 0 }];
-        savedTx.account = receivedInto;
-        settledMsg = ` — settled into ${receivedInto}`;
-      } else {
-        settledMsg = ' — pending receipt';
-      }
-    }
-    save(); toast((kind==='sale') ? `Invoice saved — ${money(grandTotal)}${settledMsg}` : (kind==='purchase') ? `Bill saved — ${money(grandTotal)} pending payment` : `${title.replace(/s$/,'')} entry saved — ${money(grandTotal)}`);
+    save(); toast((kind==='sale') ? `Invoice saved — ${money(grandTotal)} pending receipt` : (kind==='purchase') ? `Bill saved — ${money(grandTotal)} pending payment` : `${title.replace(/s$/,'')} entry saved — ${money(grandTotal)}`);
     render();
   });
 
@@ -2255,12 +2321,6 @@ function renderGstTxTab(main, kind, title, subtitle, catGroup){
     updateLineCountNote(); updatePreview();
     document.getElementById('txSubmitBtn').textContent = `Update ${kind==='sale'?'invoice':'bill'}`;
     document.getElementById('cancelEditBtn').style.display = 'inline-flex';
-    // Editing never changes payment/settled status (see comment at save time), so this field is
-    // irrelevant while editing — hide it rather than let it imply editing could re-settle or re-open the invoice.
-    const receivedIntoField = document.getElementById('receivedIntoField');
-    const receivedIntoNote = document.getElementById('receivedIntoNote');
-    if(receivedIntoField) receivedIntoField.style.display = 'none';
-    if(receivedIntoNote) receivedIntoNote.textContent = "Editing doesn't change whether this invoice is settled or pending — use ⋯ → Mark received / Edit payment on the row for that.";
     document.getElementById('txForm').scrollIntoView && document.getElementById('txForm').scrollIntoView({behavior:'smooth', block:'start'});
   }
   document.getElementById('cancelEditBtn').addEventListener('click', ()=>{ editingId=null; render(); });
@@ -2273,6 +2333,8 @@ function renderInventory(main){
   const low = lowStockItems();
   const distinctVals = (field)=> [...new Set(state.inventoryItems.map(i=>i[field]).filter(Boolean))].sort((a,b)=>a.localeCompare(b));
   const typeOpts = distinctVals('type');
+  const brandOpts = distinctVals('brand');
+  const colorOpts = distinctVals('color');
   const optsHtml = (arr)=> arr.map(v=>`<option value="${v}">`).join('');
   const usedBytes = storageUsedBytes();
   const usedPct = Math.min(100, round2(usedBytes / ESTIMATED_STORAGE_LIMIT_BYTES * 100));
@@ -2293,6 +2355,8 @@ function renderInventory(main){
       <form class="inline" id="itemForm">
         <div><label>Item name</label><input name="name" placeholder="e.g. Blue T-Shirt (M)" required></div>
         <div><label>Type</label><input name="type" list="typeList" placeholder="e.g. Stationery" autocomplete="off"></div>
+        <div><label>Brand</label><input name="brand" list="brandList" placeholder="e.g. Classmate" autocomplete="off"></div>
+        <div><label>Color</label><input name="color" list="colorList" placeholder="e.g. Blue" autocomplete="off"></div>
         <div><label>Unit</label><input name="unit" placeholder="pcs, kg, box…" value="pcs"></div>
         <div><label>Opening qty</label><input name="qty" type="number" step="any" value="0" required></div>
         <div><label>Unit price (${state.currency})</label><input name="cost" type="number" step="any" min="0" value="0" required></div>
@@ -2302,6 +2366,8 @@ function renderInventory(main){
       </form>
       <div class="field-note">Photos are resized and stored only in this browser, for your own reference — up to 2 per item.</div>
       <datalist id="typeList">${optsHtml(typeOpts)}</datalist>
+      <datalist id="brandList">${optsHtml(brandOpts)}</datalist>
+      <datalist id="colorList">${optsHtml(colorOpts)}</datalist>
     </div>
 
     <div class="panel">
@@ -2314,7 +2380,8 @@ function renderInventory(main){
         <thead><tr><th></th><th>Item</th><th>Unit</th><th class="num">Qty on hand</th><th class="num">Unit price</th><th class="num">Sale price</th><th class="num">Value</th><th></th></tr></thead>
         <tbody id="invItemsBody">${items.length ? items.map(i=>{
           const thumb = (i.photos && i.photos.length) ? `<img src="${i.photos[0]}" data-viewphotos="${i.id}" style="width:36px;height:36px;object-fit:cover;border-radius:4px;border:1px solid #ddd;cursor:pointer;" title="${i.photos.length} photo(s) — click to view">` : '';
-          return `<tr data-item-row data-name="${(i.name||'').toLowerCase().replace(/"/g,'&quot;')}" data-type="${(i.type||'').toLowerCase().replace(/"/g,'&quot;')}"><td style="width:44px;">${thumb}</td><td>${i.name}${i.type?`<div class="muted" style="font-size:10.5px;">${i.type}</div>`:''}</td><td class="muted">${i.unit||'pcs'}</td>
+          const subline = [i.type, i.brand, i.color].filter(Boolean).join(' • ');
+          return `<tr data-item-row data-name="${(i.name||'').toLowerCase().replace(/"/g,'&quot;')}" data-type="${(i.type||'').toLowerCase().replace(/"/g,'&quot;')}"><td style="width:44px;">${thumb}</td><td>${i.name}${subline?`<div class="muted" style="font-size:10.5px;">${subline}</div>`:''}</td><td class="muted">${i.unit||'pcs'}</td>
           <td class="num">${fmt(i.qty)}</td><td class="num">${money(i.cost)}</td><td class="num">${money(i.price||0)}</td><td class="num">${money(itemValue(i))}</td>
           <td><button class="btn ghost small" data-edititem="${i.id}" style="margin-right:4px;">✎ Edit</button><button class="btn ghost small" data-rmitem="${i.id}">Delete</button></td></tr>`;
         }).join('') : `<tr><td colspan="8" class="empty">No items yet — add your first item above.</td></tr>`}
@@ -2368,7 +2435,7 @@ function renderInventory(main){
     const f = new FormData(e.target);
     const name = f.get('name').trim();
     if(!name) return;
-    const candidate = { name, type: f.get('type').trim(), unit: f.get('unit').trim()||'pcs', cost: parseFloat(f.get('cost'))||0, price: parseFloat(f.get('price'))||0 };
+    const candidate = { name, type: f.get('type').trim(), brand: f.get('brand').trim(), color: f.get('color').trim(), unit: f.get('unit').trim()||'pcs', cost: parseFloat(f.get('cost'))||0, price: parseFloat(f.get('price'))||0 };
     if(state.inventoryItems.some(i=>itemFingerprint(i)===itemFingerprint(candidate))){ toast('An identical item (same name and same details) already exists.'); return; }
     const photoInput = document.getElementById('itemPhotos');
     const files = photoInput && photoInput.files ? [...photoInput.files].slice(0,2) : [];
@@ -2482,6 +2549,107 @@ function renderInventory(main){
    Bank Account, or any other cash/bank account added under Settings) and returns a running-balance ledger,
    using each payment's own recorded date so it lines up with the bank statement or cash register entry it
    corresponds to. */
+/* ============================= LEDGER (Reports tab — any title, any of the four groups + parties) =============================
+   Generalizes the per-account ledger above to Asset/Liability/Equity accounts, Income/Expense titles, and
+   Client/Vendor parties, all pickable from one dropdown. RECEIVABLE_ACCOUNT/PAYABLE_ACCOUNT are deliberately
+   left out of the Asset/Liability groups here — they're internal "pending" buckets, not real transactable
+   accounts, and picking the relevant Client/Vendor gives a much more useful per-invoice view of them anyway. */
+function balanceAccountLedger(kind, name){
+  const acc = findAcc(kind, name);
+  const opening = acc ? (Number(acc.opening)||0) : 0;
+  const entries = [];
+  if(kind==='asset'){
+    state.transactions.forEach(t=>{
+      if(t.kind==='sale' && t.payments){ (t.payments||[]).forEach(p=>{ if(p.account===name && p.amount>0) entries.push({date:p.date||t.date, desc:`Received — ${t.description||t.invoiceNo||'Sale'}`, in:Number(p.amount)||0, out:0}); }); return; }
+      if(t.kind==='purchase' && t.payments){ (t.payments||[]).forEach(p=>{ if(p.account===name && p.amount>0) entries.push({date:p.date||t.date, desc:`Paid — ${t.description||t.invoiceNo||'Purchase'}`, in:0, out:Number(p.amount)||0}); }); return; }
+      if(t.kind==='contra'){ if(t.fromAccount===name) entries.push({date:t.date, desc:`Transfer to ${t.toAccount}${t.description?' — '+t.description:''}`, in:0, out:Number(t.amount)||0}); if(t.toAccount===name) entries.push({date:t.date, desc:`Transfer from ${t.fromAccount}${t.description?' — '+t.description:''}`, in:Number(t.amount)||0, out:0}); return; }
+      if((t.kind==='income'||t.kind==='expense') && t.account===name){ const amt=txTotal(t); entries.push({date:t.date, desc:`${t.category}${t.description?' — '+t.description:''}`, in: t.flow==='in'?amt:0, out: t.flow==='out'?amt:0}); }
+    });
+  } else {
+    // Liability/Equity accounts (other than the PAYABLE_ACCOUNT bucket) are only ever moved by a Fund
+    // Transfer (contra) — purchases always post to PAYABLE_ACCOUNT specifically, never a named liability
+    // account directly — so a transfer is the only thing that can appear here besides the opening balance.
+    state.transactions.forEach(t=>{
+      if(t.kind!=='contra') return;
+      if(t.fromAccount===name) entries.push({date:t.date, desc:`Transfer to ${t.toAccount}${t.description?' — '+t.description:''}`, in:0, out:Number(t.amount)||0});
+      if(t.toAccount===name) entries.push({date:t.date, desc:`Transfer from ${t.fromAccount}${t.description?' — '+t.description:''}`, in:Number(t.amount)||0, out:0});
+    });
+  }
+  entries.sort((a,b)=> new Date(a.date)-new Date(b.date));
+  let bal = opening;
+  const rows = entries.map(e=>{ bal = round2(bal + e.in - e.out); return {...e, balance:bal}; });
+  return {opening, rows, closing:bal};
+}
+function ledgerGroupOptionsHtml(){
+  const opt = (v,label)=> `<option value="${v}">${label}</option>`;
+  const assetOpts = state.accounts.asset.filter(a=>a.name!==RECEIVABLE_ACCOUNT).map(a=>opt(`asset::${a.name}`, a.name)).join('');
+  const liabOpts = state.accounts.liability.filter(a=>a.name!==PAYABLE_ACCOUNT).map(a=>opt(`liability::${a.name}`, a.name)).join('');
+  const eqOpts = state.accounts.equity.map(a=>opt(`equity::${a.name}`, a.name)).join('');
+  const incOpts = state.categories.income.filter(c=>c!==CREDIT_NOTE_CATEGORY).map(c=>opt(`income::${c}`, c)).join('');
+  const expOpts = state.categories.expense.filter(c=>c!==PURCHASE_RETURN_CATEGORY).map(c=>opt(`expense::${c}`, c)).join('');
+  const clientOpts = state.clients.map(c=>opt(`client::${c.id}`, c.name)).join('');
+  const vendorOpts = state.vendors.map(v=>opt(`vendor::${v.id}`, v.name)).join('');
+  return `
+    <optgroup label="Assets">${assetOpts||''}</optgroup>
+    <optgroup label="Liabilities">${liabOpts||''}</optgroup>
+    <optgroup label="Equity">${eqOpts||''}</optgroup>
+    <optgroup label="Income titles">${incOpts||''}</optgroup>
+    <optgroup label="Expense titles">${expOpts||''}</optgroup>
+    <optgroup label="Clients">${clientOpts||''}</optgroup>
+    <optgroup label="Vendors">${vendorOpts||''}</optgroup>
+  `;
+}
+function computeLedgerResultHtml(selValue){
+  if(!selValue) return `<div class="empty">Choose a title above to see its entries.</div>`;
+  const sep = selValue.indexOf('::');
+  const type = selValue.slice(0,sep), key = selValue.slice(sep+2);
+  const f = periodFilter(reportRange);
+
+  if(type==='asset' || type==='liability' || type==='equity'){
+    const led = balanceAccountLedger(type, key);
+    const before = led.rows.filter(r=>!f(r.date));
+    const shown = led.rows.filter(r=>f(r.date));
+    const openingForPeriod = before.length ? before[before.length-1].balance : led.opening;
+    if(!shown.length) return `<div class="empty">No transactions for ${key} in this period. Opening/carried balance: ${money(openingForPeriod)}.</div>`;
+    return `<table><thead><tr><th>Date</th><th>Particulars</th><th class="num">Debit</th><th class="num">Credit</th><th class="num">Balance</th></tr></thead>
+    <tbody>
+    <tr><td class="muted" colspan="3">Opening balance</td><td class="num">${money(openingForPeriod)}</td><td></td></tr>
+    ${shown.map(r=>`<tr><td class="muted">${dispDate(r.date)}</td><td>${r.desc}</td><td class="num">${r.out?money(r.out):''}</td><td class="num">${r.in?money(r.in):''}</td><td class="num">${money(r.balance)}</td></tr>`).join('')}
+    </tbody></table>
+    <div class="field-note">Closing balance: ${money(shown[shown.length-1].balance)}.</div>`;
+  }
+
+  if(type==='income' || type==='expense'){
+    const rows = state.transactions.filter(t=>{
+      if(type==='income') return (t.kind==='sale'||t.kind==='income') && t.category===key && f(t.date);
+      return (t.kind==='purchase'||t.kind==='expense') && t.category===key && f(t.date);
+    }).sort((a,b)=> new Date(a.date)-new Date(b.date));
+    if(!rows.length) return `<div class="empty">No entries under "${key}" in this period.</div>`;
+    const total = round2(rows.reduce((s,t)=>s+(Number(t.amount)||0),0));
+    return `<table><thead><tr><th>Date</th><th>Source</th><th>Description</th><th class="num">Amount</th></tr></thead>
+    <tbody>${rows.map(t=>`<tr><td class="muted">${dispDate(t.date)}</td><td class="muted">${t.kind==='sale'?'Sale':t.kind==='purchase'?'Purchase':t.kind==='income'?'Income entry':'Expense entry'}</td><td>${t.description||'<span class="muted">—</span>'}</td><td class="num">${money(t.amount)}</td></tr>`).join('')}</tbody></table>
+    <div class="field-note">Total under "${key}" this period: ${money(total)}.</div>`;
+  }
+
+  if(type==='client' || type==='vendor'){
+    const partyKind = type==='client' ? 'sale' : 'purchase';
+    const party = findParty(partyKind, key);
+    if(!party) return `<div class="empty">This ${type} no longer exists.</div>`;
+    const rows = state.transactions.filter(t=> t.kind===partyKind && t.partyId==key && f(t.date)).sort((a,b)=> new Date(a.date)-new Date(b.date));
+    if(!rows.length) return `<div class="empty">No entries for ${party.name} in this period.</div>`;
+    const totalBilled = round2(rows.reduce((s,t)=>s+txTotal(t),0));
+    const totalOutstanding = round2(rows.filter(t=>!(t.docType==='credit-note'||t.docType==='debit-note')).reduce((s,t)=>s+txOutstanding(t),0));
+    return `<table><thead><tr><th>Date</th><th>${partyKind==='sale'?'Invoice':'Bill'}</th><th>Type</th><th class="num">Total</th><th class="num">Outstanding</th></tr></thead>
+    <tbody>${rows.map(t=>{
+      const label = t.docType==='credit-note' ? 'Credit Note' : t.docType==='debit-note' ? 'Debit Note' : (partyKind==='sale'?'Invoice':'Bill');
+      const outs = (t.docType==='credit-note'||t.docType==='debit-note') ? '' : money(txOutstanding(t));
+      return `<tr><td class="muted">${dispDate(t.date)}</td><td>${t.invoiceNo||'—'}</td><td class="muted">${label}</td><td class="num">${money(txTotal(t))}</td><td class="num">${outs}</td></tr>`;
+    }).join('')}</tbody></table>
+    <div class="field-note">Total billed this period: ${money(totalBilled)} · Currently outstanding: ${money(totalOutstanding)}.</div>`;
+  }
+  return `<div class="empty">Unknown selection.</div>`;
+}
+
 function accountLedger(name){
   const acc = findAcc('asset', name);
   const opening = acc ? (Number(acc.opening)||0) : 0;
@@ -2743,44 +2911,57 @@ function renderReports(main){
       <div><label>To</label><input type="date" name="to" value="${reportCustomTo}"></div>
       <div><button class="btn primary" type="submit">Apply</button></div>
     </form>` : ''}
-    <div class="panel">
-      <h2>Trading Account <span class="tag">${rangeLabel(reportRange)}</span></h2>
-      ${renderTradingAccount(reportRange)}
-    </div>
-    <div class="two-col">
-      <div class="panel">
-        <h2>Profit &amp; Loss <span class="tag">${rangeLabel(reportRange)}</span></h2>
-        ${renderPnL()}
+    <details class="panel report-collapse">
+      <summary><h2>Trading Account <span class="tag">${rangeLabel(reportRange)}</span></h2></summary>
+      <div class="report-collapse-body">${renderTradingAccount(reportRange)}</div>
+    </details>
+    <details class="panel report-collapse">
+      <summary><h2>Profit &amp; Loss <span class="tag">${rangeLabel(reportRange)}</span></h2></summary>
+      <div class="report-collapse-body">${renderPnL()}</div>
+    </details>
+    <details class="panel report-collapse">
+      <summary><h2>Balance Sheet <span class="tag">As of today</span></h2></summary>
+      <div class="report-collapse-body">${renderBalanceSheet()}</div>
+    </details>
+    <details class="panel report-collapse">
+      <summary><h2>GST Summary <span class="tag">${rangeLabel(reportRange)} · for GSTR filing</span></h2></summary>
+      <div class="report-collapse-body">${renderGstSummary()}</div>
+    </details>
+    <details class="panel report-collapse">
+      <summary><h2>State-wise Sales Summary <span class="tag">${rangeLabel(reportRange)} · for GSTR-1</span></h2></summary>
+      <div class="report-collapse-body">${renderStateWiseSales()}</div>
+    </details>
+    <details class="panel report-collapse">
+      <summary><h2>Sales Register (GST) <span class="tag">${txByKind('sale').filter(t=>periodFilter(reportRange)(t.date)).length} invoices</span></h2></summary>
+      <div class="report-collapse-body">${renderGstRegister('sale')}</div>
+    </details>
+    <details class="panel report-collapse">
+      <summary><h2>Purchase Register (GST) <span class="tag">${txByKind('purchase').filter(t=>periodFilter(reportRange)(t.date)).length} invoices</span></h2></summary>
+      <div class="report-collapse-body">${renderGstRegister('purchase')}</div>
+    </details>
+    <details class="panel report-collapse">
+      <summary><h2>Ledger <span class="tag">${rangeLabel(reportRange)} · pick any title</span></h2></summary>
+      <div class="report-collapse-body">
+        <div class="inline" style="margin-bottom:14px;">
+          <div><label>Select a title</label>
+            <select id="ledgerSelect"><option value="">— choose —</option>${ledgerGroupOptionsHtml()}</select>
+          </div>
+        </div>
+        <div id="ledgerResult"><div class="empty">Choose a title above to see its entries.</div></div>
       </div>
-      <div class="panel">
-        <h2>Balance Sheet <span class="tag">As of today</span></h2>
-        ${renderBalanceSheet()}
-      </div>
-    </div>
-    <div class="panel">
-      <h2>GST Summary <span class="tag">${rangeLabel(reportRange)} · for GSTR filing</span></h2>
-      ${renderGstSummary()}
-    </div>
-    <div class="panel">
-      <h2>State-wise Sales Summary <span class="tag">${rangeLabel(reportRange)} · for GSTR-1</span></h2>
-      ${renderStateWiseSales()}
-    </div>
-    <div class="panel">
-      <h2>Sales Register (GST) <span class="tag">${txByKind('sale').filter(t=>periodFilter(reportRange)(t.date)).length} invoices</span></h2>
-      ${renderGstRegister('sale')}
-    </div>
-    <div class="panel">
-      <h2>Purchase Register (GST) <span class="tag">${txByKind('purchase').filter(t=>periodFilter(reportRange)(t.date)).length} invoices</span></h2>
-      ${renderGstRegister('purchase')}
-    </div>
-    <div id="ledgerWrap">${cashBankAccounts().map(a=>`<div class="panel">
-      <h2>${a.name} <span class="tag">${rangeLabel(reportRange)} · reconcile with your ${/bank/i.test(a.name)?'bank statement':'cash register'}</span></h2>
-      ${renderAccountLedger(a.name)}
-    </div>`).join('')}</div>
+    </details>
+    <div id="ledgerWrap">${cashBankAccounts().map(a=>`<details class="panel report-collapse">
+      <summary><h2>${a.name} <span class="tag">${rangeLabel(reportRange)} · reconcile with your ${/bank/i.test(a.name)?'bank statement':'cash register'}</span></h2></summary>
+      <div class="report-collapse-body">${renderAccountLedger(a.name)}</div>
+    </details>`).join('')}</div>
     <div class="panel">
       <button class="btn ghost" id="exportExcelBtn">⬇ Export full workbook (.xlsx) — for your accountant</button>
     </div>
   `;
+  const ledgerSelectEl = document.getElementById('ledgerSelect');
+  if(ledgerSelectEl) ledgerSelectEl.addEventListener('change', ()=>{
+    document.getElementById('ledgerResult').innerHTML = computeLedgerResultHtml(ledgerSelectEl.value);
+  });
   document.getElementById('rangeTabs').addEventListener('click', e=>{
     const b = e.target.closest('button[data-r]'); if(!b) return;
     reportRange = b.dataset.r; render();
@@ -2855,6 +3036,21 @@ function renderStateWiseSales(){
   <div class="field-note">This is the state-wise breakup needed for GSTR-1 filing (Table 7 for B2C, or Table 5 for B2B by state) — handy when your Amazon orders ship pan-India. Set a "Buyer's state" on each sale entry to populate this. Cash invoices (no GST) are excluded here since they're not relevant for GST filing.</div>`;
 }
 
+/* Renders one side (Dr or Cr / Assets or Liabilities) of a horizontal T-format statement: a simple
+   Particulars/Amount table with a bold total row. Shared by Trading Account, P&L, and (indirectly,
+   via its own markup) the Balance Sheet below. */
+function renderTAccountSide(side, title, rows, totalLabel, totalValue, totalColor){
+  return `<div class="t-side t-${side}">
+    <div class="section-title" style="text-align:center;">${title}</div>
+    <table>
+      <thead><tr><th>Particulars</th><th class="num">Amount</th></tr></thead>
+      <tbody>
+        ${rows.length ? rows.map(r=>`<tr><td>${r.label}</td><td class="num">${money(r.value)}</td></tr>`).join('') : `<tr><td class="muted">Nothing this period</td><td></td></tr>`}
+      </tbody>
+      <tfoot><tr><td>${totalLabel}</td><td class="num" style="${totalColor?`color:${totalColor};`:''}">${money(totalValue)}</td></tr></tfoot>
+    </table>
+  </div>`;
+}
 function renderTradingAccount(range){
   const opening = openingStockValue(range);
   const purchases = purchasesTotal(range);
@@ -2863,19 +3059,25 @@ function renderTradingAccount(range){
   const sales = salesTotal(range);
   const gross = sales - cogs;
   const closingIsAsOfToday = periodEndDate(range) === todayISO();
-  return `<div class="statement">
-    <div class="section-title">Cost of Goods Sold</div>
-    <div class="line sub"><span>Opening Stock</span><span class="num">${money(opening)}</span></div>
-    <div class="line sub"><span>Add: Purchases</span><span class="num">${money(purchases)}</span></div>
-    <div class="line sub" style="border-top:1px solid var(--rule);"><span>Goods available</span><span class="num">${money(opening+purchases)}</span></div>
-    <div class="line sub"><span>Less: Closing Stock${closingIsAsOfToday?'':' (as of today)'}</span><span class="num">${money(closing)}</span></div>
-    <div class="line total"><span>Cost of Goods Sold</span><span class="num">${money(cogs)}</span></div>
-    <div class="section-title" style="margin-top:10px;">Gross Profit</div>
-    <div class="line sub"><span>Sales</span><span class="num">${money(sales)}</span></div>
-    <div class="line sub"><span>Less: Cost of Goods Sold</span><span class="num">${money(cogs)}</span></div>
-    <div class="line total" style="border-top:2px solid var(--accent); color:${gross<0?'var(--bad)':'var(--accent)'};"><span>Gross ${gross<0?'Loss':'Profit'}</span><span class="num">${money(Math.abs(gross))}</span></div>
+
+  const drRows = [
+    {label:'To Opening Stock', value:opening},
+    {label:'To Purchases', value:purchases}
+  ];
+  const crRows = [
+    {label:'By Sales', value:sales},
+    {label:`By Closing Stock${closingIsAsOfToday?'':' (as of today)'}`, value:closing}
+  ];
+  if(gross>=0) drRows.push({label:'To Gross Profit c/d', value:gross});
+  else crRows.push({label:'By Gross Loss c/d', value:-gross});
+  const drTotal = round2(drRows.reduce((s,r)=>s+r.value,0));
+  const crTotal = round2(crRows.reduce((s,r)=>s+r.value,0));
+
+  return `<div class="t-format">
+    ${renderTAccountSide('left','Dr', drRows, 'Total', drTotal)}
+    ${renderTAccountSide('right','Cr', crRows, 'Total', crTotal)}
   </div>
-  <div class="field-note">Opening Stock is reconstructed from your stock movement history as it stood at the start of the period; Closing Stock is always your current stock on hand as of today${closingIsAsOfToday?'':`, since ${dispDate(periodEndDate(range))} is in the past and the app doesn't keep a day-by-day stock ledger`}. Purchases and Sales are the invoice totals recorded in this period (Purchases/Sales tabs). This Gross Profit is separate from the Net Profit on the Profit &amp; Loss below, which also includes any non-trading income/expenses.</div>`;
+  <div class="field-note">Opening Stock is reconstructed from your stock movement history as it stood at the start of the period; Closing Stock is always your current stock on hand as of today${closingIsAsOfToday?'':`, since ${dispDate(periodEndDate(range))} is in the past and the app doesn't keep a day-by-day stock ledger`}. Purchases and Sales are the invoice totals recorded in this period (Purchases/Sales tabs). ${gross>=0?'Gross Profit':'Gross Loss'} carries down to the Profit &amp; Loss account, which also includes any non-trading income/expenses.</div>`;
 }
 function renderPnL(){
   const f = periodFilter(reportRange);
@@ -2892,14 +3094,17 @@ function renderPnL(){
   const exp = Object.entries(expenseByCat).filter(([,v])=>isNonZero(v));
   const totalInc = inc.reduce((s,[,v])=>s+v,0), totalExp = exp.reduce((s,[,v])=>s+v,0);
   const profit = totalInc-totalExp;
-  return `<div class="statement">
-    <div class="section-title">Income</div>
-    ${inc.length? inc.map(([c,v])=>`<div class="line sub"><span>${c}</span><span class="num">${money(v)}</span></div>`).join('') : '<div class="line sub muted"><span>No income recorded</span><span></span></div>'}
-    <div class="line total"><span>Total Income</span><span class="num">${money(totalInc)}</span></div>
-    <div class="section-title">Expenses</div>
-    ${exp.length? exp.map(([c,v])=>`<div class="line sub"><span>${c}</span><span class="num">${money(v)}</span></div>`).join('') : '<div class="line sub muted"><span>No expenses recorded</span><span></span></div>'}
-    <div class="line total"><span>Total Expenses</span><span class="num">${money(totalExp)}</span></div>
-    <div class="line total" style="border-top:2px solid var(--accent); color:${profit<0?'var(--bad)':'var(--accent)'};"><span>Net ${profit<0?'Loss':'Profit'}</span><span class="num">${money(Math.abs(profit))}</span></div>
+
+  const drRows = exp.map(([c,v])=>({label:`To ${c}`, value:v}));
+  const crRows = inc.map(([c,v])=>({label:`By ${c}`, value:v}));
+  if(profit>=0) drRows.push({label:'To Net Profit c/d', value:profit});
+  else crRows.push({label:'By Net Loss c/d', value:-profit});
+  const drTotal = round2(drRows.reduce((s,r)=>s+r.value,0));
+  const crTotal = round2(crRows.reduce((s,r)=>s+r.value,0));
+
+  return `<div class="t-format">
+    ${renderTAccountSide('left','Dr (Expenses)', drRows, 'Total', drTotal)}
+    ${renderTAccountSide('right','Cr (Income)', crRows, 'Total', crTotal)}
   </div>`;
 }
 
@@ -2985,19 +3190,22 @@ function renderBalanceSheet(){
   };
   const plainLine = (a)=>`<div class="line sub"><span>${a.name}</span><span class="num">${money(a.bal)}</span></div>`;
 
-  return `<div class="statement">
-    <div class="section-title">Assets</div>
-    ${subGroup('Fixed Assets', fixedAssets, assetLine)}
-    ${subGroup('Current Assets', currentAssets, assetLine)}
-    ${!fixedAssets.length && !currentAssets.length ? '<div class="line sub muted"><span>No asset accounts</span><span></span></div>' : ''}
-    <div class="line total"><span>Total Assets</span><span class="num">${money(totalAssets)}</span></div>
-
-    <div class="section-title">Capital &amp; Liabilities</div>
-    ${subGroup('Capital &amp; Reserves', capitalReserve, plainLine)}
-    ${subGroup('Long-term Liabilities', longTermLiab, liabLine)}
-    ${subGroup('Current Liabilities', currentLiab, liabLine)}
-    ${!capitalReserve.length && !longTermLiab.length && !currentLiab.length ? '<div class="line sub muted"><span>No liability or equity accounts</span><span></span></div>' : ''}
-    <div class="line total" style="border-top:2px solid var(--accent);"><span>Total Capital &amp; Liabilities</span><span class="num">${money(totalLiab+totalEquity)}</span></div>
+  return `<div class="t-format">
+    <div class="t-side t-left statement">
+      <div class="section-title" style="text-align:center;">Assets</div>
+      ${subGroup('Fixed Assets', fixedAssets, assetLine)}
+      ${subGroup('Current Assets', currentAssets, assetLine)}
+      ${!fixedAssets.length && !currentAssets.length ? '<div class="line sub muted"><span>No asset accounts</span><span></span></div>' : ''}
+      <div class="line total"><span>Total Assets</span><span class="num">${money(totalAssets)}</span></div>
+    </div>
+    <div class="t-side t-right statement">
+      <div class="section-title" style="text-align:center;">Capital &amp; Liabilities</div>
+      ${subGroup('Capital &amp; Reserves', capitalReserve, plainLine)}
+      ${subGroup('Long-term Liabilities', longTermLiab, liabLine)}
+      ${subGroup('Current Liabilities', currentLiab, liabLine)}
+      ${!capitalReserve.length && !longTermLiab.length && !currentLiab.length ? '<div class="line sub muted"><span>No liability or equity accounts</span><span></span></div>' : ''}
+      <div class="line total"><span>Total Capital &amp; Liabilities</span><span class="num">${money(totalLiab+totalEquity)}</span></div>
+    </div>
   </div>
   <div class="field-note">Accounts with a ₹0 balance are left off this statement. Click ${RECEIVABLE_ACCOUNT} or ${PAYABLE_ACCOUNT} to expand and see the pending amount for each client/vendor. In Settings → Balance sheet accounts, click an account's Fixed/Current/Long-term tag to move it between subheadings. Liability and equity balances update when you edit their opening balance in Settings (e.g. after taking a loan), or via a Fund Transfer to/from an equity account (e.g. reconciling an owner's drawing or capital top-up) — day-to-day sales, purchases, expenses and income update automatically.</div>`;
 }
@@ -3057,7 +3265,7 @@ function exportExcel(){
   })();
   if(stateRows.length) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(stateRows), 'State-wise Sales');
   if(state.inventoryItems.length){
-    const invRows = state.inventoryItems.map(i=>({Item:i.name, Type:i.type||'', Unit:i.unit, 'Qty on hand':i.qty, 'Unit price':i.cost, 'Sale price':i.price||0, Value:itemValue(i)}));
+    const invRows = state.inventoryItems.map(i=>({Item:i.name, Type:i.type||'', Brand:i.brand||'', Color:i.color||'', Unit:i.unit, 'Qty on hand':i.qty, 'Unit price':i.cost, 'Sale price':i.price||0, Value:itemValue(i)}));
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(invRows), 'Inventory');
     const moveRows = state.inventoryMovements.map(m=>({Date:dispDate(m.date), Item:(findItem(m.itemId)||{}).name||'', Type:m.type, Qty:m.qty, Note:m.note}));
     if(moveRows.length) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(moveRows), 'Stock Movements');
