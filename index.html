@@ -537,16 +537,18 @@ function assetBalance(name){
   return bal;
 }
 /* A liability account's balance is normally driven by purchase bills against it (Accounts Payable),
-   but now that Liability accounts are also selectable in a Journal Entry Fund Transfer (contra) — e.g.
-   a loan repayment out of Bank, or a fresh loan received into Bank — a contra can move it too, same
-   mechanism as Asset/Equity accounts below. */
+   but a Journal Entry Fund Transfer (contra) can also move it — e.g. a loan repayment out of Bank, or
+   fresh loan proceeds received into Bank. A liability behaves OPPOSITE to an Asset/Equity account here:
+   money sent TO a liability (e.g. "Transfer from Bank to UGRO Capital" = an EMI's principal) is paying
+   it down, so it DECREASES the balance; money sourced FROM a liability (e.g. "Transfer from UGRO Capital
+   to Bank" = taking a fresh loan) is new borrowing, so it INCREASES the balance. */
 function liabilityBalance(name){
   const acc = findAcc('liability', name); if(!acc) return 0;
   let bal = acc.opening;
   state.transactions.forEach(t=>{
     if(t.kind==='contra'){
-      if(t.fromAccount===name) bal -= (Number(t.amount)||0);
-      if(t.toAccount===name) bal += (Number(t.amount)||0);
+      if(t.fromAccount===name) bal += (Number(t.amount)||0);
+      if(t.toAccount===name) bal -= (Number(t.amount)||0);
       return;
     }
     if(t.kind!=='purchase') return;
@@ -1595,7 +1597,7 @@ function renderGeneralEntryTab(main){
             <optgroup label="Expense titles">${state.categories.expense.map(c=>`<option value="${c}">${c}</option>`).join('')}</optgroup>
           </select>
         </div>
-        <div class="field-note">Tip: a transfer from Bank/Cash to Owner's Capital records a drawing; from Owner's Capital to Bank/Cash records a capital top-up. You can also pick an Income title as "Transfer from" (records it as income into the Asset account on the other side) or an Expense title as "Transfer to" (records it as an expense paid from the Asset account on the other side) — those are logged as a normal Income/Expense entry, not a transfer. Liability and Equity accounts can only be used for a plain transfer, paired with another real account.</div>
+        <div class="field-note">Tip: a transfer from Bank/Cash to Owner's Capital records a drawing; from Owner's Capital to Bank/Cash records a capital top-up. For a loan (Liability account), it's the opposite way round: a transfer from Bank/Cash to the loan account records an EMI's principal / a repayment — the loan balance goes down; from the loan account to Bank/Cash records fresh loan proceeds received — the loan balance goes up. You can also pick an Income title as "Transfer from" (records it as income into the Asset account on the other side) or an Expense title as "Transfer to" (records it as an expense paid from the Asset account on the other side) — those are logged as a normal Income/Expense entry, not a transfer. Liability and Equity accounts can only be used for a plain transfer, paired with another real account.</div>
         <div><label>Description (optional)</label><input name="description" placeholder="Note / party name"></div>
         <div><button class="btn primary" type="submit" id="txSubmitBtn">Save entry</button> <button class="btn ghost" type="button" id="cancelEditBtn" style="display:none;">Cancel edit</button></div>
       </form>
@@ -2577,10 +2579,21 @@ function balanceAccountLedger(kind, name){
       if(t.kind==='contra'){ if(t.fromAccount===name) entries.push({date:t.date, desc:`Transfer to ${t.toAccount}${t.description?' — '+t.description:''}`, in:0, out:Number(t.amount)||0}); if(t.toAccount===name) entries.push({date:t.date, desc:`Transfer from ${t.fromAccount}${t.description?' — '+t.description:''}`, in:Number(t.amount)||0, out:0}); return; }
       if((t.kind==='income'||t.kind==='expense') && t.account===name){ const amt=txTotal(t); entries.push({date:t.date, desc:`${t.category}${t.description?' — '+t.description:''}`, in: t.flow==='in'?amt:0, out: t.flow==='out'?amt:0}); }
     });
+  } else if(kind==='liability'){
+    // Liability accounts (other than the PAYABLE_ACCOUNT bucket) are only ever moved by a Fund Transfer
+    // (contra) — purchases always post to PAYABLE_ACCOUNT specifically, never a named liability account
+    // directly. A liability behaves OPPOSITE to an asset: money sent TO it (e.g. an EMI's principal) is
+    // paying it down (out/decrease); money sourced FROM it (e.g. fresh loan proceeds) is new borrowing
+    // (in/increase) — see liabilityBalance() for the matching balance calculation.
+    state.transactions.forEach(t=>{
+      if(t.kind!=='contra') return;
+      if(t.fromAccount===name) entries.push({date:t.date, desc:`Transfer to ${t.toAccount}${t.description?' — '+t.description:''}`, in:Number(t.amount)||0, out:0});
+      if(t.toAccount===name) entries.push({date:t.date, desc:`Transfer from ${t.fromAccount}${t.description?' — '+t.description:''}`, in:0, out:Number(t.amount)||0});
+    });
   } else {
-    // Liability/Equity accounts (other than the PAYABLE_ACCOUNT bucket) are only ever moved by a Fund
-    // Transfer (contra) — purchases always post to PAYABLE_ACCOUNT specifically, never a named liability
-    // account directly — so a transfer is the only thing that can appear here besides the opening balance.
+    // Equity accounts are only ever moved by a Fund Transfer (contra) — same convention as an asset
+    // (money sent TO the equity account increases it, e.g. a capital top-up; money sourced FROM it
+    // decreases it, e.g. an owner's drawing).
     state.transactions.forEach(t=>{
       if(t.kind!=='contra') return;
       if(t.fromAccount===name) entries.push({date:t.date, desc:`Transfer to ${t.toAccount}${t.description?' — '+t.description:''}`, in:0, out:Number(t.amount)||0});
