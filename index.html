@@ -28,8 +28,8 @@
     --radius:10px;
   }
   *{box-sizing:border-box;}
-  body{ margin:0; background:var(--paper); color:var(--ink); font-family:'Inter',system-ui,sans-serif; -webkit-font-smoothing:antialiased;}
-  .disp{ font-family:'Space Grotesk',sans-serif; font-weight:700;}
+  body{ margin:0; background:var(--paper); color:var(--ink); font-family:var(--body-font, 'Inter', system-ui, sans-serif); -webkit-font-smoothing:antialiased;}
+  .disp{ font-family:var(--display-font, 'Space Grotesk', sans-serif); font-weight:700;}
   .num{ font-family:'JetBrains Mono',monospace; font-variant-numeric:tabular-nums;}
   .app{ display:flex; min-height:100vh;}
 
@@ -229,6 +229,90 @@ const PAYABLE_ACCOUNT = 'Accounts Payable (Pending)';
 const CREDIT_NOTE_CATEGORY = 'Sales Returns / Credit Notes';
 const PURCHASE_RETURN_CATEGORY = 'Purchase Returns / Debit Notes';
 
+/* ============================= APPEARANCE (color themes + fonts) =============================
+   10 selectable color options total: 9 named preset palettes below, plus "Custom" (a 6-swatch
+   builder in Settings that derives the lighter -soft/rule/ink-soft tones automatically). Lavender
+   matches the app's shipped default exactly, so picking it is a visual no-op. Fonts: 4 common presets
+   plus "Custom" (upload your own font file). Both are saved with the business's data and re-applied
+   on every load via applySavedTheme()/applyFontChoice() (see INIT at the bottom of this file). */
+const COLOR_PRESETS = {
+  Blue:     { paper:'#F5F8FF', ink:'#132038', inkSoft:'#5F6C8A', rule:'#DCE4F5', accent:'#2F6FED', accentSoft:'#E4ECFE', amber:'#C98A2C', amberSoft:'#F5E9D5', bad:'#C4384A', badSoft:'#F6E1E4', good:'#1E8E5A' },
+  Gold:     { paper:'#FCFAF3', ink:'#332B14', inkSoft:'#8A7B4E', rule:'#EDE3C4', accent:'#B8860B', accentSoft:'#F5EBCE', amber:'#C98A2C', amberSoft:'#F5E9D5', bad:'#B23A48', badSoft:'#F6E1E3', good:'#5C7A2E' },
+  Silver:   { paper:'#F7F7F8', ink:'#2A2E33', inkSoft:'#767C85', rule:'#DCDEE2', accent:'#6E7480', accentSoft:'#E7E9EC', amber:'#C98A2C', amberSoft:'#F5E9D5', bad:'#B23A48', badSoft:'#F6E1E3', good:'#3E7C5A' },
+  Yellow:   { paper:'#FDFBEF', ink:'#332E10', inkSoft:'#8C813C', rule:'#F0E7B8', accent:'#D9A916', accentSoft:'#FBF1CC', amber:'#C98A2C', amberSoft:'#F5E9D5', bad:'#B23A48', badSoft:'#F6E1E3', good:'#5C8A2E' },
+  Peach:    { paper:'#FEF7F2', ink:'#3A2A20', inkSoft:'#977A66', rule:'#F5DFCB', accent:'#E58A5D', accentSoft:'#FCE9DC', amber:'#C98A2C', amberSoft:'#F5E9D5', bad:'#C4384A', badSoft:'#F6E1E4', good:'#4E8A5E' },
+  Lavender: { paper:'#F9F8FC', ink:'#3F3B54', inkSoft:'#837FA0', rule:'#E6E1F2', accent:'#6B84D1', accentSoft:'#E7ECFB', amber:'#C99A4E', amberSoft:'#FBF1DE', bad:'#D97A93', badSoft:'#FBE9EE', good:'#6FA88C' },
+  Green:    { paper:'#F5FAF6', ink:'#1B2E22', inkSoft:'#5E7C6A', rule:'#D9EDE0', accent:'#2C8A5B', accentSoft:'#DCF1E4', amber:'#C98A2C', amberSoft:'#F5E9D5', bad:'#B23A48', badSoft:'#F6E1E3', good:'#2C8A5B' },
+  Orange:   { paper:'#FFF8F2', ink:'#3A2712', inkSoft:'#96754D', rule:'#F5DCC0', accent:'#E06B1F', accentSoft:'#FBE4D0', amber:'#C98A2C', amberSoft:'#F5E9D5', bad:'#C4384A', badSoft:'#F6E1E4', good:'#4E8A5E' },
+  Pink:     { paper:'#FEF6F8', ink:'#3A222A', inkSoft:'#996C7C', rule:'#F5D6E1', accent:'#D9497B', accentSoft:'#FBE1EA', amber:'#C98A2C', amberSoft:'#F5E9D5', bad:'#C4384A', badSoft:'#F6E1E4', good:'#4E8A5E' }
+};
+const FONT_PRESETS = {
+  Inter: "'Inter',system-ui,sans-serif",
+  Roboto: "'Roboto',system-ui,sans-serif",
+  Poppins: "'Poppins',system-ui,sans-serif",
+  Lato: "'Lato',system-ui,sans-serif"
+};
+const GOOGLE_FONT_URLS = {
+  Roboto: 'https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;600;700&display=swap',
+  Poppins: 'https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&display=swap',
+  Lato: 'https://fonts.googleapis.com/css2?family=Lato:wght@400;700;900&display=swap'
+};
+function hexToRgb(hex){ hex=(hex||'').replace('#',''); if(hex.length===3) hex=hex.split('').map(c=>c+c).join(''); const n=parseInt(hex,16)||0; return [(n>>16)&255,(n>>8)&255,n&255]; }
+function mixHex(hex, targetRgb, amt){ const [r,g,b]=hexToRgb(hex); const [tr,tg,tb]=targetRgb; const m=(a,t)=>Math.round(a+(t-a)*amt); return '#'+[m(r,tr),m(g,tg),m(b,tb)].map(v=>v.toString(16).padStart(2,'0')).join(''); }
+function lightenHex(hex, amt){ return mixHex(hex, [255,255,255], amt); }
+const THEME_VARS = ['--paper','--ink','--ink-soft','--rule','--accent','--accent-soft','--amber','--amber-soft','--bad','--bad-soft','--good'];
+function applyThemeColors(colors){
+  const root = document.documentElement.style;
+  root.setProperty('--paper', colors.paper);
+  root.setProperty('--ink', colors.ink);
+  root.setProperty('--ink-soft', lightenHex(colors.ink, 0.45));
+  root.setProperty('--rule', lightenHex(colors.ink, 0.86));
+  root.setProperty('--accent', colors.accent);
+  root.setProperty('--accent-soft', lightenHex(colors.accent, 0.85));
+  root.setProperty('--amber', colors.amber);
+  root.setProperty('--amber-soft', lightenHex(colors.amber, 0.85));
+  root.setProperty('--bad', colors.bad);
+  root.setProperty('--bad-soft', lightenHex(colors.bad, 0.85));
+  root.setProperty('--good', colors.good);
+}
+function applyPresetTheme(name){
+  const p = COLOR_PRESETS[name];
+  if(!p) return;
+  const root = document.documentElement.style;
+  root.setProperty('--paper', p.paper); root.setProperty('--ink', p.ink); root.setProperty('--ink-soft', p.inkSoft);
+  root.setProperty('--rule', p.rule); root.setProperty('--accent', p.accent); root.setProperty('--accent-soft', p.accentSoft);
+  root.setProperty('--amber', p.amber); root.setProperty('--amber-soft', p.amberSoft);
+  root.setProperty('--bad', p.bad); root.setProperty('--bad-soft', p.badSoft); root.setProperty('--good', p.good);
+}
+function applySavedTheme(){
+  const th = state.theme;
+  if(th && th.preset==='Custom' && th.colors) applyThemeColors(th.colors);
+  else applyPresetTheme((th && th.preset) || 'Lavender');
+}
+function ensureGoogleFontLoaded(name){
+  if(!GOOGLE_FONT_URLS[name] || document.getElementById('gf-'+name)) return;
+  const link = document.createElement('link');
+  link.id = 'gf-'+name; link.rel = 'stylesheet'; link.href = GOOGLE_FONT_URLS[name];
+  document.head.appendChild(link);
+}
+function applyFontChoice(){
+  const f = state.fontChoice;
+  const root = document.documentElement.style;
+  if(!f || !f.preset || f.preset==='Inter'){ root.removeProperty('--body-font'); root.removeProperty('--display-font'); return; }
+  if(f.preset==='Custom' && f.customDataUrl){
+    let styleEl = document.getElementById('customFontFace');
+    if(!styleEl){ styleEl = document.createElement('style'); styleEl.id='customFontFace'; document.head.appendChild(styleEl); }
+    styleEl.textContent = `@font-face{ font-family:'UserCustomFont'; src:url(${f.customDataUrl}) format('${f.customFormat||'woff2'}'); font-display:swap; }`;
+    root.setProperty('--body-font', "'UserCustomFont', system-ui, sans-serif");
+    root.setProperty('--display-font', "'UserCustomFont', system-ui, sans-serif");
+    return;
+  }
+  ensureGoogleFontLoaded(f.preset);
+  const stack = FONT_PRESETS[f.preset] || FONT_PRESETS.Inter;
+  root.setProperty('--body-font', stack);
+  root.setProperty('--display-font', stack);
+}
+
 function seedState(){
   return {
     businessName: 'AEC Digital Printers',
@@ -240,9 +324,9 @@ function seedState(){
       expense: ['Paper & Printing Materials / COGS', 'Design Software & Tools', 'Rent', 'Salaries & Wages', 'Packaging & Shipping', 'Marketing', 'Miscellaneous Expenses', PURCHASE_RETURN_CATEGORY]
     },
     accounts:{
-      asset: [ {name:'Cash In Hand', opening:0, type:'current'}, {name:'Bank Account', opening:0, type:'current'}, {name:RECEIVABLE_ACCOUNT, opening:0, type:'current'} ],
-      liability: [ {name:'Loans Payable', opening:0, type:'longterm'}, {name:'Accounts Payable', opening:0, type:'current'}, {name:PAYABLE_ACCOUNT, opening:0, type:'current'} ],
-      equity: [ {name:"Owner's Capital", opening:0} ]
+      asset: [ {name:'Cash In Hand', opening:0, type:'current', subtitle:'Cash & Bank Balances'}, {name:'Bank Account', opening:0, type:'current', subtitle:'Cash & Bank Balances'}, {name:RECEIVABLE_ACCOUNT, opening:0, type:'current', subtitle:'Trade Receivables'} ],
+      liability: [ {name:'Loans Payable', opening:0, type:'longterm', subtitle:'Loans (Bank/NBFC)'}, {name:'Accounts Payable', opening:0, type:'current', subtitle:'Trade Payables'}, {name:PAYABLE_ACCOUNT, opening:0, type:'current', subtitle:'Trade Payables'} ],
+      equity: [ {name:"Owner's Capital", opening:0, subtitle:'Capital & Reserves'} ]
     },
     invoiceSettings:{
       businessLegalName: 'A E Commercial',
@@ -269,7 +353,9 @@ function seedState(){
     clients: [],
     vendors: [],
     nextId: 1,
-    onboarded:false
+    onboarded:false,
+    theme: { preset:'Lavender', colors:null },
+    fontChoice: { preset:'Inter', customName:'', customDataUrl:'', customFormat:'' }
   };
 }
 let state = load();
@@ -298,6 +384,14 @@ function load(){
     /* Backfill balance-sheet subheading (type) for accounts saved before this classification existed. */
     p.accounts.asset.forEach(a=>{ if(!a.type) a.type = /fixed|equipment|machinery|vehicle|building|land|furniture|computer|printer/i.test(a.name) ? 'fixed' : 'current'; });
     p.accounts.liability.forEach(a=>{ if(!a.type) a.type = /loan|mortgage|debenture/i.test(a.name) && a.name!==PAYABLE_ACCOUNT ? 'longterm' : 'current'; });
+    /* Balance Sheet grouping moved from a fixed Fixed/Current/Long-term toggle to a free-text, user-named
+       Subtitle per account. For accounts saved before this existed, carry the old type over as a starting
+       subtitle (so nobody's existing grouping disappears) — from there it's freely renamable in Settings. */
+    p.accounts.asset.forEach(a=>{ if(a.subtitle===undefined) a.subtitle = a.type==='fixed' ? 'Fixed Assets' : 'Current Assets'; });
+    p.accounts.liability.forEach(a=>{ if(a.subtitle===undefined) a.subtitle = a.type==='longterm' ? 'Long-term Liabilities' : 'Current Liabilities'; });
+    p.accounts.equity.forEach(a=>{ if(a.subtitle===undefined) a.subtitle = 'Capital & Reserves'; });
+    if(!p.theme) p.theme = { preset:'Lavender', colors:null };
+    if(!p.fontChoice) p.fontChoice = { preset:'Inter', customName:'', customDataUrl:'', customFormat:'' };
     return p;
   }catch(e){ return seedState(); }
 }
@@ -3066,7 +3160,7 @@ function renderStateWiseSales(){
    via its own markup) the Balance Sheet below. */
 function renderTAccountSide(side, title, rows, totalLabel, totalValue, totalColor){
   return `<div class="t-side t-${side}">
-    <div class="section-title" style="text-align:center;">${title}</div>
+    <div class="section-title" style="text-align:left;">${title}</div>
     <table>
       <thead><tr><th>Particulars</th><th class="num">Amount</th></tr></thead>
       <tbody>
@@ -3167,13 +3261,13 @@ const BS_ZERO_EPS = 0.005;
 const isNonZero = (n)=> Math.abs(n) > BS_ZERO_EPS;
 
 function renderBalanceSheet(){
-  const rawAssets = state.accounts.asset.map(a=>({name:a.name, bal:assetBalance(a.name), type:a.type||'current'}));
-  if(state.inventoryItems.length) rawAssets.push({name:'Inventory (at cost)', bal:inventoryValue(), type:'current'});
-  const rawLiabilities = state.accounts.liability.map(a=>({name:a.name, bal:liabilityBalance(a.name), type:a.type||'current'}));
+  const rawAssets = state.accounts.asset.map(a=>({name:a.name, bal:assetBalance(a.name), subtitle:a.subtitle}));
+  if(state.inventoryItems.length) rawAssets.push({name:'Inventory (at cost)', bal:inventoryValue(), subtitle:'Inventory / Stock-in-Trade'});
+  const rawLiabilities = state.accounts.liability.map(a=>({name:a.name, bal:liabilityBalance(a.name), subtitle:a.subtitle}));
   const netGst = netGSTPayable('all');
-  if(netGst>0) rawLiabilities.push({name:'GST Payable (net, to date)', bal:netGst, type:'current'});
-  else if(netGst<0) rawAssets.push({name:'GST Input Credit (net, to date)', bal:-netGst, type:'current'});
-  const equity = state.accounts.equity.map(a=>({name:a.name, bal:equityBalance(a.name)}));
+  if(netGst>0) rawLiabilities.push({name:'GST Payable (net, to date)', bal:netGst, subtitle:'GST Payable'});
+  else if(netGst<0) rawAssets.push({name:'GST Input Credit (net, to date)', bal:-netGst, subtitle:'GST Input Credit'});
+  const equity = state.accounts.equity.map(a=>({name:a.name, bal:equityBalance(a.name), subtitle:a.subtitle}));
   const retained = netProfit('all');
 
   // Everything below is computed on the FULL (unfiltered) lists, so totals always tie out correctly —
@@ -3195,44 +3289,49 @@ function renderBalanceSheet(){
     }
     return `<div class="line sub"><span>${a.name}</span><span class="num">${money(a.bal)}</span></div>`;
   };
-
-  // A vertical, classified balance sheet: assets split into Fixed / Current, and the other side split
-  // into Capital & Reserves, Long-term Liabilities and Current Liabilities. Any subheading with
-  // nothing non-zero in it is skipped entirely, and so is any individual ₹0 line within a subheading.
-  const fixedAssets = rawAssets.filter(a=>a.type==='fixed' && isNonZero(a.bal));
-  const currentAssets = rawAssets.filter(a=>a.type!=='fixed' && isNonZero(a.bal));
-  const longTermLiab = rawLiabilities.filter(a=>a.type==='longterm' && isNonZero(a.bal));
-  const currentLiab = rawLiabilities.filter(a=>a.type!=='longterm' && isNonZero(a.bal));
-  const capitalReserve = equity.filter(a=>isNonZero(a.bal));
-  if(isNonZero(retained)) capitalReserve.push({name:'Retained Earnings (net profit to date)', bal:retained});
-
-  const subGroup = (title, rows, lineFn)=>{
-    if(!rows.length) return '';
-    const subtotal = rows.reduce((s,a)=>s+a.bal,0);
-    return `<div class="section-title" style="font-size:12px; margin-top:10px;">${title}</div>
-      ${rows.map(lineFn).join('')}
-      <div class="line sub" style="font-weight:700; border-top:1px solid var(--rule); margin-top:2px;"><span>Total ${title}</span><span class="num">${money(subtotal)}</span></div>`;
-  };
   const plainLine = (a)=>`<div class="line sub"><span>${a.name}</span><span class="num">${money(a.bal)}</span></div>`;
+
+  // A vertical, classified balance sheet: rows are grouped under whatever Subtitle each account was
+  // given in Settings → Balance sheet accounts (an account with no subtitle set falls under "Other"),
+  // in the order those subtitles first appear among the accounts. Any group with nothing non-zero in
+  // it is skipped entirely, and so is any individual ₹0 line within a group.
+  const groupBySubtitle = (rows)=>{
+    const order = []; const groups = {};
+    rows.filter(r=>isNonZero(r.bal)).forEach(r=>{
+      const key = (r.subtitle||'').trim() || 'Other';
+      if(!groups[key]){ groups[key]=[]; order.push(key); }
+      groups[key].push(r);
+    });
+    return order.map(title=>({title, rows:groups[title]}));
+  };
+  const assetGroups = groupBySubtitle(rawAssets);
+  const liabGroups = groupBySubtitle(rawLiabilities);
+  const equityRows = equity.slice();
+  if(isNonZero(retained)) equityRows.push({name:'Retained Earnings (net profit to date)', bal:retained, subtitle:'Capital & Reserves'});
+  const equityGroups = groupBySubtitle(equityRows);
+
+  const renderGroups = (groups, lineFn)=> groups.map(g=>{
+    const subtotal = g.rows.reduce((s,a)=>s+a.bal,0);
+    return `<div class="section-title" style="font-size:12px; margin-top:10px;">${g.title}</div>
+      ${g.rows.map(lineFn).join('')}
+      <div class="line sub" style="font-weight:700; border-top:1px solid var(--rule); margin-top:2px;"><span>Total ${g.title}</span><span class="num">${money(subtotal)}</span></div>`;
+  }).join('');
 
   return `<div class="t-format">
     <div class="t-side t-left statement">
-      <div class="section-title" style="text-align:center;">Assets</div>
-      ${subGroup('Fixed Assets', fixedAssets, assetLine)}
-      ${subGroup('Current Assets', currentAssets, assetLine)}
-      ${!fixedAssets.length && !currentAssets.length ? '<div class="line sub muted"><span>No asset accounts</span><span></span></div>' : ''}
+      <div class="section-title" style="text-align:left;">Assets</div>
+      ${assetGroups.length ? renderGroups(assetGroups, assetLine) : '<div class="line sub muted"><span>No asset accounts</span><span></span></div>'}
       <div class="line total"><span>Total Assets</span><span class="num">${money(totalAssets)}</span></div>
     </div>
     <div class="t-side t-right statement">
-      <div class="section-title" style="text-align:center;">Capital &amp; Liabilities</div>
-      ${subGroup('Capital &amp; Reserves', capitalReserve, plainLine)}
-      ${subGroup('Long-term Liabilities', longTermLiab, liabLine)}
-      ${subGroup('Current Liabilities', currentLiab, liabLine)}
-      ${!capitalReserve.length && !longTermLiab.length && !currentLiab.length ? '<div class="line sub muted"><span>No liability or equity accounts</span><span></span></div>' : ''}
+      <div class="section-title" style="text-align:left;">Capital &amp; Liabilities</div>
+      ${equityGroups.length ? renderGroups(equityGroups, plainLine) : ''}
+      ${liabGroups.length ? renderGroups(liabGroups, liabLine) : ''}
+      ${!equityGroups.length && !liabGroups.length ? '<div class="line sub muted"><span>No liability or equity accounts</span><span></span></div>' : ''}
       <div class="line total"><span>Total Capital &amp; Liabilities</span><span class="num">${money(totalLiab+totalEquity)}</span></div>
     </div>
   </div>
-  <div class="field-note">Accounts with a ₹0 balance are left off this statement. Click ${RECEIVABLE_ACCOUNT} or ${PAYABLE_ACCOUNT} to expand and see the pending amount for each client/vendor. In Settings → Balance sheet accounts, click an account's Fixed/Current/Long-term tag to move it between subheadings. Liability and equity balances update when you edit their opening balance in Settings (e.g. after taking a loan), or via a Fund Transfer to/from an equity account (e.g. reconciling an owner's drawing or capital top-up) — day-to-day sales, purchases, expenses and income update automatically.</div>`;
+  <div class="field-note">Accounts with a ₹0 balance are left off this statement. Click ${RECEIVABLE_ACCOUNT} or ${PAYABLE_ACCOUNT} to expand and see the pending amount for each client/vendor. The groupings above come straight from the Subtitle you set for each account in Settings → Balance sheet accounts — an account with no subtitle shows under "Other". Liability and equity balances update when you edit their opening balance in Settings (e.g. after taking a loan), or via a Fund Transfer to/from a Liability/Equity account (e.g. an EMI's principal, an owner's drawing) — day-to-day sales, purchases, expenses and income update automatically.</div>`;
 }
 
 function exportExcel(){
@@ -3296,10 +3395,10 @@ function exportExcel(){
     if(moveRows.length) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(moveRows), 'Stock Movements');
   }
   const bsRows = [];
-  state.accounts.asset.forEach(a=>{ const b=assetBalance(a.name); if(isNonZero(b)) bsRows.push({Category:(a.type==='fixed'?'Fixed Assets':'Current Assets'), Account:a.name, Balance:b}); });
-  if(state.inventoryItems.length && isNonZero(inventoryValue())) bsRows.push({Category:'Current Assets', Account:'Inventory (at cost)', Balance:inventoryValue()});
-  state.accounts.liability.forEach(a=>{ const b=liabilityBalance(a.name); if(isNonZero(b)) bsRows.push({Category:(a.type==='longterm'?'Long-term Liabilities':'Current Liabilities'), Account:a.name, Balance:b}); });
-  state.accounts.equity.forEach(a=>{ const b=equityBalance(a.name); if(isNonZero(b)) bsRows.push({Category:'Capital & Reserves', Account:a.name, Balance:b}); });
+  state.accounts.asset.forEach(a=>{ const b=assetBalance(a.name); if(isNonZero(b)) bsRows.push({Category:(a.subtitle||'Other'), Account:a.name, Balance:b}); });
+  if(state.inventoryItems.length && isNonZero(inventoryValue())) bsRows.push({Category:'Inventory / Stock-in-Trade', Account:'Inventory (at cost)', Balance:inventoryValue()});
+  state.accounts.liability.forEach(a=>{ const b=liabilityBalance(a.name); if(isNonZero(b)) bsRows.push({Category:(a.subtitle||'Other'), Account:a.name, Balance:b}); });
+  state.accounts.equity.forEach(a=>{ const b=equityBalance(a.name); if(isNonZero(b)) bsRows.push({Category:(a.subtitle||'Capital & Reserves'), Account:a.name, Balance:b}); });
   if(isNonZero(netProfit('all'))) bsRows.push({Category:'Capital & Reserves', Account:'Retained Earnings (net profit to date)', Balance:netProfit('all')});
   XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(bsRows), 'Balance Sheet');
   XLSX.writeFile(wb, `${state.businessName.replace(/[^a-z0-9]+/gi,'-')}-books-${todayISO()}.xlsx`);
@@ -3598,6 +3697,36 @@ function renderSettings(main){
     </div>
 
     <div class="panel">
+      <h2>Appearance</h2>
+      <label style="display:block;margin-bottom:8px;">Color theme</label>
+      <div class="row" style="flex-wrap:wrap; gap:10px; align-items:center;">
+        ${Object.keys(COLOR_PRESETS).map(name=>`<button type="button" class="theme-swatch-btn" data-theme-preset="${name}" title="${name}" style="width:38px;height:38px;border-radius:50%;border:2px solid ${state.theme && state.theme.preset===name ? 'var(--ink)':'transparent'};background:${COLOR_PRESETS[name].accent};cursor:pointer;padding:0;"></button>`).join('')}
+        <button type="button" class="btn ${state.theme && state.theme.preset==='Custom' ? 'primary':'ghost'} small" id="customThemeToggleBtn">🎨 Custom palette</button>
+      </div>
+      <div class="field-note" id="activeThemeNote" style="margin-top:6px;">Active: ${(state.theme && state.theme.preset) || 'Lavender'}</div>
+      <div id="customThemeBuilder" class="row" style="display:${state.theme && state.theme.preset==='Custom' ? 'flex':'none'}; gap:14px; flex-wrap:wrap; margin-top:12px; padding:14px; background:var(--paper); border-radius:8px; border:1px solid var(--rule);">
+        <div><label>Background</label><input type="color" id="customPaper" value="${(state.theme && state.theme.colors && state.theme.colors.paper) || '#F9F8FC'}"></div>
+        <div><label>Text</label><input type="color" id="customInk" value="${(state.theme && state.theme.colors && state.theme.colors.ink) || '#3F3B54'}"></div>
+        <div><label>Accent</label><input type="color" id="customAccent" value="${(state.theme && state.theme.colors && state.theme.colors.accent) || '#6B84D1'}"></div>
+        <div><label>Warning</label><input type="color" id="customAmber" value="${(state.theme && state.theme.colors && state.theme.colors.amber) || '#C99A4E'}"></div>
+        <div><label>Danger</label><input type="color" id="customBad" value="${(state.theme && state.theme.colors && state.theme.colors.bad) || '#D97A93'}"></div>
+        <div><label>Success</label><input type="color" id="customGood" value="${(state.theme && state.theme.colors && state.theme.colors.good) || '#6FA88C'}"></div>
+        <div style="align-self:flex-end;"><button type="button" class="btn primary small" id="applyCustomThemeBtn">Apply custom colors</button></div>
+      </div>
+
+      <label style="display:block;margin:18px 0 8px;">Font</label>
+      <div class="row" style="flex-wrap:wrap; gap:10px;">
+        ${Object.keys(FONT_PRESETS).map(name=>`<button type="button" class="btn ${state.fontChoice && state.fontChoice.preset===name ? 'primary':'ghost'} small" data-font-preset="${name}" style="font-family:${FONT_PRESETS[name]};">${name}</button>`).join('')}
+        <button type="button" class="btn ${state.fontChoice && state.fontChoice.preset==='Custom' ? 'primary':'ghost'} small" id="customFontToggleBtn">⬆ Upload your own</button>
+      </div>
+      <div id="customFontUploadRow" class="row" style="display:${state.fontChoice && state.fontChoice.preset==='Custom' ? 'flex':'none'}; gap:10px; align-items:center; margin-top:10px;">
+        <input type="file" id="customFontFile" accept=".ttf,.otf,.woff,.woff2">
+        <span class="field-note" id="customFontName" style="margin:0;">${(state.fontChoice && state.fontChoice.customName) || 'No font uploaded yet'}</span>
+      </div>
+      <div class="field-note" style="margin-top:10px;">Colors and fonts apply across the whole app and are saved with your data — same on every device you open this file on. Numbers always keep their own fixed monospace font for alignment, regardless of what's picked here.</div>
+    </div>
+
+    <div class="panel">
       <h2>Income titles <span class="tag">used in Sales &amp; Other Income</span></h2>
       <div class="row"><input id="newIncomeCat" placeholder="e.g. Consulting Fees" style="max-width:260px;"><button class="btn ghost small" id="addIncomeCat">＋ Add</button></div>
       <div class="chip-list" id="incomeChips"></div>
@@ -3626,21 +3755,21 @@ function renderSettings(main){
       <div class="settings-grid">
         <div>
           <label>Asset accounts</label>
-          <div class="row"><input id="newAssetAcc" placeholder="Account name" style="max-width:130px;"><input id="newAssetBal" type="number" placeholder="Opening ₹" style="max-width:90px;"><select id="newAssetType" style="max-width:112px;"><option value="current">Current</option><option value="fixed">Fixed</option></select><button class="btn ghost small" id="addAssetAcc">＋</button></div>
+          <div class="row"><input id="newAssetAcc" placeholder="Account name" style="max-width:130px;"><input id="newAssetBal" type="number" placeholder="Opening ₹" style="max-width:90px;"><input id="newAssetSubtitle" list="assetSubtitleList" placeholder="Subtitle (optional)" style="max-width:130px;"><button class="btn ghost small" id="addAssetAcc">＋</button></div>
           <div class="chip-list" id="assetChips"></div>
         </div>
         <div>
           <label>Liability accounts</label>
-          <div class="row"><input id="newLiabAcc" placeholder="Account name" style="max-width:130px;"><input id="newLiabBal" type="number" placeholder="Opening ₹" style="max-width:90px;"><select id="newLiabType" style="max-width:112px;"><option value="current">Current</option><option value="longterm">Long-term</option></select><button class="btn ghost small" id="addLiabAcc">＋</button></div>
+          <div class="row"><input id="newLiabAcc" placeholder="Account name" style="max-width:130px;"><input id="newLiabBal" type="number" placeholder="Opening ₹" style="max-width:90px;"><input id="newLiabSubtitle" list="liabilitySubtitleList" placeholder="Subtitle (optional)" style="max-width:130px;"><button class="btn ghost small" id="addLiabAcc">＋</button></div>
           <div class="chip-list" id="liabChips"></div>
         </div>
         <div>
           <label>Equity accounts</label>
-          <div class="row"><input id="newEqAcc" placeholder="Account name" style="max-width:150px;"><input id="newEqBal" type="number" placeholder="Opening ₹" style="max-width:100px;"><button class="btn ghost small" id="addEqAcc">＋</button></div>
+          <div class="row"><input id="newEqAcc" placeholder="Account name" style="max-width:150px;"><input id="newEqBal" type="number" placeholder="Opening ₹" style="max-width:100px;"><input id="newEqSubtitle" list="equitySubtitleList" placeholder="Subtitle (optional)" style="max-width:130px;"><button class="btn ghost small" id="addEqAcc">＋</button></div>
           <div class="chip-list" id="eqChips"></div>
         </div>
       </div>
-      <div class="field-note">Click ✎ to correct an account's title, click its balance to edit the opening amount (e.g. after taking a loan, or an accountant's adjustment), or click the Fixed/Current/Long-term tag to move it between balance sheet subheadings.</div>
+      <div class="field-note">The small "Subtitle" box next to each account is what groups it on the Balance Sheet — type any name you like (e.g. "Cash & Bank Balances", "Loans & Advances Given", "Fixed Assets", "Loans (Bank/NBFC)", "Unsecured Loans") and it'll suggest subtitles you've already used. Accounts left blank show under "Other" on the Balance Sheet. Click ✎ to correct an account's title, or click its balance to edit the opening amount (e.g. after taking a loan, or an accountant's adjustment).</div>
     </div>
 
     <div class="panel">
@@ -3684,6 +3813,55 @@ function renderSettings(main){
     state.businessGSTIN = document.getElementById('bizGstinInput').value.trim().toUpperCase();
     state.homeState = document.getElementById('bizStateInput').value.trim();
     save(); toast('Business details saved.'); render();
+  });
+
+  document.querySelectorAll('[data-theme-preset]').forEach(btn=>{
+    btn.addEventListener('click', ()=>{
+      const name = btn.dataset.themePreset;
+      state.theme = { preset:name, colors:null };
+      save(); applyPresetTheme(name); toast(`${name} theme applied.`); render();
+    });
+  });
+  document.getElementById('customThemeToggleBtn').addEventListener('click', ()=>{
+    const box = document.getElementById('customThemeBuilder');
+    box.style.display = box.style.display==='none' ? 'flex' : 'none';
+  });
+  document.getElementById('applyCustomThemeBtn').addEventListener('click', ()=>{
+    const colors = {
+      paper: document.getElementById('customPaper').value,
+      ink: document.getElementById('customInk').value,
+      accent: document.getElementById('customAccent').value,
+      amber: document.getElementById('customAmber').value,
+      bad: document.getElementById('customBad').value,
+      good: document.getElementById('customGood').value
+    };
+    state.theme = { preset:'Custom', colors };
+    save(); applyThemeColors(colors); toast('Custom colors applied.'); render();
+  });
+  document.querySelectorAll('[data-font-preset]').forEach(btn=>{
+    btn.addEventListener('click', ()=>{
+      const name = btn.dataset.fontPreset;
+      state.fontChoice = { preset:name, customName:'', customDataUrl:'', customFormat:'' };
+      save(); applyFontChoice(); toast(`${name} font applied.`); render();
+    });
+  });
+  document.getElementById('customFontToggleBtn').addEventListener('click', ()=>{
+    const row = document.getElementById('customFontUploadRow');
+    row.style.display = row.style.display==='none' ? 'flex' : 'none';
+  });
+  document.getElementById('customFontFile').addEventListener('change', e=>{
+    const file = e.target.files[0]; if(!file) return;
+    if(file.size > 3*1024*1024){ toast('That font file is quite large (over 3MB) — try a .woff2 version if you have one, to keep this browser\'s storage healthy.'); e.target.value=''; return; }
+    const ext = (file.name.split('.').pop()||'').toLowerCase();
+    const fmtMap = {ttf:'truetype', otf:'opentype', woff:'woff', woff2:'woff2'};
+    const format = fmtMap[ext] || 'woff2';
+    const reader = new FileReader();
+    reader.onload = ()=>{
+      state.fontChoice = { preset:'Custom', customName:file.name, customDataUrl:reader.result, customFormat:format };
+      save(); applyFontChoice(); toast(`Font "${file.name}" applied.`); render();
+    };
+    reader.onerror = ()=> toast('Could not read that font file.');
+    reader.readAsDataURL(file);
   });
 
   document.getElementById('saveInvBtn').addEventListener('click', ()=>{
@@ -3785,50 +3963,53 @@ function renderSettings(main){
     save(); drawCatChips(group, group==='income'?'incomeChips':'expenseChips');
   });
 
-  const TYPE_LABEL = { fixed:'Fixed', longterm:'Long-term', current:'Current' };
-  function typeTagHtml(kind, a){
-    if(kind==='equity') return '';
-    const t = a.type || 'current';
-    return `<span class="pill" data-toggletype="${kind}::${a.name}" title="Click to change subheading" style="cursor:pointer; background:var(--amber-soft); color:var(--amber); font-size:10px; padding:1px 6px;">${TYPE_LABEL[t]}</span>`;
-  }
   function drawAccChips(kind, elId){
     const el = document.getElementById(elId);
-    el.innerHTML = state.accounts[kind].map(a=>{
+    const suggestions = [...new Set(state.accounts[kind].map(a=>a.subtitle).filter(Boolean))];
+    const datalistId = kind+'SubtitleList';
+    const datalistHtml = `<datalist id="${datalistId}">${suggestions.map(s=>`<option value="${s}">`).join('')}</datalist>`;
+    el.innerHTML = datalistHtml + state.accounts[kind].map(a=>{
       const bal = kind==='asset' ? assetBalance(a.name) : (kind==='liability' ? liabilityBalance(a.name) : a.opening);
-      return `<div class="chip acc">${a.name} ${typeTagHtml(kind,a)}<span class="bal" data-editbal="${kind}::${a.name}" style="cursor:pointer; text-decoration:underline dotted;">${money(bal)}</span><button data-editaccname="${kind}::${a.name}" title="Edit title" style="background:var(--accent-soft); color:var(--accent);">✎</button><button data-rmacc="${kind}::${a.name}" title="Remove">×</button></div>`;
+      return `<div class="chip acc">${a.name}
+        <input class="subtitle-input" data-subtitle="${kind}::${a.name}" list="${datalistId}" value="${a.subtitle||''}" placeholder="Subtitle" title="Groups this account on the Balance Sheet" style="width:105px;font-size:10.5px;padding:2px 6px;border-radius:10px;border:1px solid var(--rule);background:var(--amber-soft);color:var(--amber);">
+        <span class="bal" data-editbal="${kind}::${a.name}" style="cursor:pointer; text-decoration:underline dotted;">${money(bal)}</span>
+        <button data-editaccname="${kind}::${a.name}" title="Edit title" style="background:var(--accent-soft); color:var(--accent);">✎</button>
+        <button data-rmacc="${kind}::${a.name}" title="Remove">×</button>
+      </div>`;
     }).join('');
   }
   drawAccChips('asset','assetChips'); drawAccChips('liability','liabChips'); drawAccChips('equity','eqChips');
 
-  function addAccHandler(kind, nameId, balId, chipsId, typeId){
+  function addAccHandler(kind, nameId, balId, chipsId, subtitleId){
     const name = document.getElementById(nameId).value.trim();
     const opening = parseFloat(document.getElementById(balId).value) || 0;
     if(!name) return;
     if(state.accounts[kind].some(a=>a.name.toLowerCase()===name.toLowerCase())){ toast('That account already exists.'); return; }
     const acc = {name, opening};
-    if(typeId) acc.type = document.getElementById(typeId).value;
+    if(subtitleId) acc.subtitle = document.getElementById(subtitleId).value.trim();
     state.accounts[kind].push(acc);
-    save(); document.getElementById(nameId).value=''; document.getElementById(balId).value='';
+    save(); document.getElementById(nameId).value=''; document.getElementById(balId).value=''; if(subtitleId) document.getElementById(subtitleId).value='';
     drawAccChips(kind, chipsId);
   }
-  document.getElementById('addAssetAcc').addEventListener('click', ()=>addAccHandler('asset','newAssetAcc','newAssetBal','assetChips','newAssetType'));
-  document.getElementById('addLiabAcc').addEventListener('click', ()=>addAccHandler('liability','newLiabAcc','newLiabBal','liabChips','newLiabType'));
-  document.getElementById('addEqAcc').addEventListener('click', ()=>addAccHandler('equity','newEqAcc','newEqBal','eqChips'));
+  document.getElementById('addAssetAcc').addEventListener('click', ()=>addAccHandler('asset','newAssetAcc','newAssetBal','assetChips','newAssetSubtitle'));
+  document.getElementById('addLiabAcc').addEventListener('click', ()=>addAccHandler('liability','newLiabAcc','newLiabBal','liabChips','newLiabSubtitle'));
+  document.getElementById('addEqAcc').addEventListener('click', ()=>addAccHandler('equity','newEqAcc','newEqBal','eqChips','newEqSubtitle'));
+
+  main.addEventListener('change', e=>{
+    const si = e.target.closest('.subtitle-input');
+    if(si){
+      const [kind, name] = si.dataset.subtitle.split('::');
+      const acc = findAcc(kind, name);
+      if(acc){ acc.subtitle = si.value.trim(); save(); }
+      drawAccChips(kind, kind==='asset'?'assetChips':kind==='liability'?'liabChips':'eqChips');
+    }
+  });
 
   main.addEventListener('click', e=>{
-    const tt = e.target.closest('[data-toggletype]');
-    if(tt){
-      const [kind, name] = tt.dataset.toggletype.split('::');
-      const acc = findAcc(kind, name);
-      if(kind==='asset') acc.type = (acc.type==='fixed') ? 'current' : 'fixed';
-      else if(kind==='liability') acc.type = (acc.type==='longterm') ? 'current' : 'longterm';
-      save(); drawAccChips(kind, kind==='asset'?'assetChips':'liabChips');
-      return;
-    }
     const rm = e.target.closest('[data-rmacc]');
     if(rm){
       const [kind, name] = rm.dataset.rmacc.split('::');
-      const used = state.transactions.some(t=>t.account===name);
+      const used = state.transactions.some(t=> t.account===name || t.fromAccount===name || t.toAccount===name);
       if(used){ toast(`Can't remove "${name}" — it has transactions against it.`); return; }
       state.accounts[kind] = state.accounts[kind].filter(a=>a.name!==name);
       save(); drawAccChips(kind, kind==='asset'?'assetChips':kind==='liability'?'liabChips':'eqChips');
@@ -3909,6 +4090,8 @@ if(!state.onboarded){
   state.onboarded = true;
 }
 try{ localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }catch(e){}
+applySavedTheme();
+applyFontChoice();
 render();
 initGoogleAuth();
 </script>
