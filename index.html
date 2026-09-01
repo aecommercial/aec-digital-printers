@@ -139,15 +139,20 @@
 
   /* Collapsible Reports panels — <details>/<summary> wrapping an existing .panel, closed by default;
      clicking the heading (the summary) expands it. Scoped to .report-collapse only, so ordinary .panel
-     usage elsewhere in the app (Dashboard, Sales, Settings, etc.) is untouched. */
+     usage elsewhere in the app (Dashboard, Sales, Settings, etc.) is untouched.
+     The collapse arrow lives on <summary> itself (absolutely positioned), NOT inside the <h2> — the h2 is
+     a flex row of [title, tag badge] and putting a 3rd flex item (the arrow) in there made justify-content:
+     space-between center the title between the arrow and the badge instead of anchoring it left, and since
+     each panel's badge text is a different length, every heading landed in a different spot. Keeping the
+     h2 to exactly 2 flex children keeps every panel's title flush left and aligned with the others. */
   details.report-collapse{ padding:0;}
-  details.report-collapse > summary{ list-style:none; cursor:pointer; padding:22px 24px;}
+  details.report-collapse > summary{ list-style:none; cursor:pointer; padding:22px 24px 22px 40px; position:relative;}
   details.report-collapse > summary::-webkit-details-marker{ display:none;}
-  details.report-collapse > summary h2{ margin:0; display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap;}
-  details.report-collapse > summary h2::before{ content:'▸'; display:inline-block; margin-right:8px; color:var(--ink-soft); font-size:13px; transition:transform .15s;}
-  details.report-collapse[open] > summary h2::before{ transform:rotate(90deg);}
+  details.report-collapse > summary::before{ content:'▸'; position:absolute; left:22px; top:50%; transform:translateY(-50%); color:var(--ink-soft); font-size:13px; transition:transform .15s;}
+  details.report-collapse[open] > summary::before{ transform:translateY(-50%) rotate(90deg);}
+  details.report-collapse > summary h2{ margin:0; display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap; text-align:left;}
   details.report-collapse > summary:hover{ background:#FBFAF6;}
-  details.report-collapse > .report-collapse-body{ padding:0 24px 22px;}
+  details.report-collapse > .report-collapse-body{ padding:0 24px 22px 40px;}
 
   .inv-modal{ display:none; position:fixed; inset:0; background:rgba(22,33,62,.6); z-index:200; align-items:flex-start; justify-content:center; overflow:auto; padding:26px 16px;}
   @page { size: A4; margin: 0; }
@@ -680,6 +685,7 @@ function itemFingerprint(f){
     (f.brand||'').trim().toLowerCase(),
     (f.color||'').trim().toLowerCase(),
     round2(f.gsm||0),
+    (f.size||'').trim().toLowerCase(),
     (f.unit||'').trim().toLowerCase(),
     round2(f.cost),
     round2(f.price)
@@ -1389,6 +1395,7 @@ function openItemEditModal(itemId){
         <div><label>Brand</label><input id="imBrand" list="brandList" autocomplete="off" value="${item.brand||''}"></div>
         <div><label>Color</label><input id="imColor" list="colorList" autocomplete="off" value="${item.color||''}"></div>
         <div><label>GSM</label><input id="imGsm" type="number" step="any" min="0" value="${item.gsm||''}"></div>
+        <div><label>Size</label><input id="imSize" list="sizeList" autocomplete="off" value="${item.size||''}"></div>
         <div><label>Unit</label><input id="imUnit" value="${item.unit||'pcs'}"></div>
         <div><label>Opening / on-hand qty</label><input id="imQty" type="number" step="any" value="${item.qty}"></div>
         <div><label>Unit price (${state.currency})</label><input id="imCost" type="number" step="any" min="0" value="${item.cost}"></div>
@@ -1443,6 +1450,7 @@ function openItemEditModal(itemId){
       brand: document.getElementById('imBrand').value.trim(),
       color: document.getElementById('imColor').value.trim(),
       gsm: parseFloat(document.getElementById('imGsm').value)||0,
+      size: document.getElementById('imSize').value.trim(),
       unit: document.getElementById('imUnit').value.trim()||'pcs',
       cost: parseFloat(document.getElementById('imCost').value)||0,
       price: parseFloat(document.getElementById('imPrice').value)||0
@@ -2442,6 +2450,7 @@ function renderInventory(main){
   const typeOpts = distinctVals('type');
   const brandOpts = distinctVals('brand');
   const colorOpts = distinctVals('color');
+  const sizeOpts = distinctVals('size');
   const optsHtml = (arr)=> arr.map(v=>`<option value="${v}">`).join('');
   const usedBytes = storageUsedBytes();
   const usedPct = Math.min(100, round2(usedBytes / ESTIMATED_STORAGE_LIMIT_BYTES * 100));
@@ -2465,6 +2474,7 @@ function renderInventory(main){
         <div><label>Brand</label><input name="brand" list="brandList" placeholder="e.g. Classmate" autocomplete="off"></div>
         <div><label>Color</label><input name="color" list="colorList" placeholder="e.g. Blue" autocomplete="off"></div>
         <div><label>GSM</label><input name="gsm" type="number" step="any" min="0" placeholder="e.g. 100"></div>
+        <div><label>Size</label><input name="size" list="sizeList" placeholder="e.g. A5, A4, 8.5x11 in" autocomplete="off"></div>
         <div><label>Unit</label><input name="unit" placeholder="pcs, kg, box…" value="pcs"></div>
         <div><label>Opening qty</label><input name="qty" type="number" step="any" value="0" required></div>
         <div><label>Unit price (${state.currency})</label><input name="cost" type="number" step="any" min="0" value="0" required></div>
@@ -2476,6 +2486,7 @@ function renderInventory(main){
       <datalist id="typeList">${optsHtml(typeOpts)}</datalist>
       <datalist id="brandList">${optsHtml(brandOpts)}</datalist>
       <datalist id="colorList">${optsHtml(colorOpts)}</datalist>
+      <datalist id="sizeList">${optsHtml(sizeOpts)}</datalist>
     </div>
 
     <div class="panel">
@@ -2488,7 +2499,7 @@ function renderInventory(main){
         <thead><tr><th></th><th>Item</th><th>Unit</th><th class="num">Qty on hand</th><th class="num">Unit price</th><th class="num">Sale price</th><th class="num">Value</th><th></th></tr></thead>
         <tbody id="invItemsBody">${items.length ? items.map(i=>{
           const thumb = (i.photos && i.photos.length) ? `<img src="${i.photos[0]}" data-viewphotos="${i.id}" style="width:36px;height:36px;object-fit:cover;border-radius:4px;border:1px solid #ddd;cursor:pointer;" title="${i.photos.length} photo(s) — click to view">` : '';
-          const subline = [i.type, i.brand, i.color, i.gsm?`${i.gsm} GSM`:''].filter(Boolean).join(' • ');
+          const subline = [i.type, i.brand, i.color, i.gsm?`${i.gsm} GSM`:'', i.size].filter(Boolean).join(' • ');
           return `<tr data-item-row data-name="${(i.name||'').toLowerCase().replace(/"/g,'&quot;')}" data-type="${(i.type||'').toLowerCase().replace(/"/g,'&quot;')}"><td style="width:44px;">${thumb}</td><td>${i.name}${subline?`<div class="muted" style="font-size:10.5px;">${subline}</div>`:''}</td><td class="muted">${i.unit||'pcs'}</td>
           <td class="num">${fmt(i.qty)}</td><td class="num">${money(i.cost)}</td><td class="num">${money(i.price||0)}</td><td class="num">${money(itemValue(i))}</td>
           <td><button class="btn ghost small" data-edititem="${i.id}" style="margin-right:4px;">✎ Edit</button><button class="btn ghost small" data-rmitem="${i.id}">Delete</button></td></tr>`;
@@ -2543,7 +2554,7 @@ function renderInventory(main){
     const f = new FormData(e.target);
     const name = f.get('name').trim();
     if(!name) return;
-    const candidate = { name, type: f.get('type').trim(), brand: f.get('brand').trim(), color: f.get('color').trim(), gsm: f.get('gsm')?parseFloat(f.get('gsm'))||0:0, unit: f.get('unit').trim()||'pcs', cost: parseFloat(f.get('cost'))||0, price: parseFloat(f.get('price'))||0 };
+    const candidate = { name, type: f.get('type').trim(), brand: f.get('brand').trim(), color: f.get('color').trim(), gsm: f.get('gsm')?parseFloat(f.get('gsm'))||0:0, size: f.get('size').trim(), unit: f.get('unit').trim()||'pcs', cost: parseFloat(f.get('cost'))||0, price: parseFloat(f.get('price'))||0 };
     if(state.inventoryItems.some(i=>itemFingerprint(i)===itemFingerprint(candidate))){ toast('An identical item (same name and same details) already exists.'); return; }
     const photoInput = document.getElementById('itemPhotos');
     const files = photoInput && photoInput.files ? [...photoInput.files].slice(0,2) : [];
@@ -3389,7 +3400,7 @@ function exportExcel(){
   })();
   if(stateRows.length) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(stateRows), 'State-wise Sales');
   if(state.inventoryItems.length){
-    const invRows = state.inventoryItems.map(i=>({Item:i.name, Type:i.type||'', Brand:i.brand||'', Color:i.color||'', GSM:i.gsm||'', Unit:i.unit, 'Qty on hand':i.qty, 'Unit price':i.cost, 'Sale price':i.price||0, Value:itemValue(i)}));
+    const invRows = state.inventoryItems.map(i=>({Item:i.name, Type:i.type||'', Brand:i.brand||'', Color:i.color||'', GSM:i.gsm||'', Size:i.size||'', Unit:i.unit, 'Qty on hand':i.qty, 'Unit price':i.cost, 'Sale price':i.price||0, Value:itemValue(i)}));
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(invRows), 'Inventory');
     const moveRows = state.inventoryMovements.map(m=>({Date:dispDate(m.date), Item:(findItem(m.itemId)||{}).name||'', Type:m.type, Qty:m.qty, Note:m.note}));
     if(moveRows.length) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(moveRows), 'Stock Movements');
