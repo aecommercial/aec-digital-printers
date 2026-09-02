@@ -662,14 +662,17 @@ function liabilityBalance(name){
 }
 /* Equity accounts (e.g. Owner's Capital) are normally a fixed opening balance you edit by hand in Settings,
    but a Fund Transfer (contra) can also move money into/out of one — e.g. reconciling an owner's drawing or
-   a fresh capital injection found on a bank statement. This keeps that balance accurate either way. */
+   a fresh capital injection found on a bank statement. Equity behaves OPPOSITE to an Asset here, the same
+   way a Liability does: money sourced FROM the equity account (e.g. "Transfer from Owner's Capital to Bank"
+   = a capital top-up) INCREASES it; money sent TO the equity account (e.g. "Transfer from Bank to Owner's
+   Capital" = a drawing) DECREASES it — matching the field-note shown on the Journal Entry form. */
 function equityBalance(name){
   const acc = findAcc('equity', name); if(!acc) return 0;
   let bal = acc.opening;
   state.transactions.forEach(t=>{
     if(t.kind!=='contra') return;
-    if(t.fromAccount===name) bal -= (Number(t.amount)||0);
-    if(t.toAccount===name) bal += (Number(t.amount)||0);
+    if(t.fromAccount===name) bal += (Number(t.amount)||0);
+    if(t.toAccount===name) bal -= (Number(t.amount)||0);
   });
   return bal;
 }
@@ -807,9 +810,24 @@ function totalIncome(range){
   const f = periodFilter(range);
   return state.transactions.filter(t=> (t.kind==='sale'||t.kind==='income') && f(t.date)).reduce((s,t)=>s+t.amount,0);
 }
+/* totalExpense() must be accrual-correct — Cost of Goods Sold (not raw purchases), adjusted for
+   opening/closing stock, same math as the Trading Account — plus Other Expenses. It must NOT simply sum
+   every purchase, because that treats every rupee spent on inventory as an expense the instant it's
+   purchased, even the portion still sitting on the shelf unsold. That version silently breaks the
+   fundamental accounting equation (Assets = Liabilities + Equity) for any business carrying stock, since
+   the unsold portion stays correctly on the Balance Sheet as an Asset while ALSO being wrongly subtracted
+   here — the same rupees hit twice. This also feeds netProfit() below (Retained Earnings on the Balance
+   Sheet, and the Dashboard's Net Profit card), so it has to agree with the Trading Account / P&L, or a
+   business with any inventory on hand would see different "profit" figures across the app and a Balance
+   Sheet that doesn't balance. */
 function totalExpense(range){
+  const opening = openingStockValue(range);
+  const purchases = purchasesTotal(range);
+  const closing = closingStockValue();
+  const cogs = opening + purchases - closing;
   const f = periodFilter(range);
-  return state.transactions.filter(t=> (t.kind==='purchase'||t.kind==='expense') && f(t.date)).reduce((s,t)=>s+t.amount,0);
+  const otherExpense = state.transactions.filter(t=>t.kind==='expense' && f(t.date)).reduce((s,t)=>s+t.amount,0);
+  return cogs + otherExpense;
 }
 function netProfit(range){ return totalIncome(range) - totalExpense(range); }
 function salesTotal(range){ const f=periodFilter(range); return state.transactions.filter(t=>t.kind==='sale' && f(t.date)).reduce((s,t)=>s+t.amount,0); }
@@ -2696,13 +2714,13 @@ function balanceAccountLedger(kind, name){
       if(t.toAccount===name) entries.push({date:t.date, desc:`Transfer from ${t.fromAccount}${t.description?' — '+t.description:''}`, in:0, out:Number(t.amount)||0});
     });
   } else {
-    // Equity accounts are only ever moved by a Fund Transfer (contra) — same convention as an asset
-    // (money sent TO the equity account increases it, e.g. a capital top-up; money sourced FROM it
-    // decreases it, e.g. an owner's drawing).
+    // Equity accounts behave OPPOSITE to an asset here, same as Liability above: money sourced FROM the
+    // equity account (e.g. a capital top-up) increases it; money sent TO it (e.g. an owner's drawing)
+    // decreases it — see equityBalance() for the matching balance calculation.
     state.transactions.forEach(t=>{
       if(t.kind!=='contra') return;
-      if(t.fromAccount===name) entries.push({date:t.date, desc:`Transfer to ${t.toAccount}${t.description?' — '+t.description:''}`, in:0, out:Number(t.amount)||0});
-      if(t.toAccount===name) entries.push({date:t.date, desc:`Transfer from ${t.fromAccount}${t.description?' — '+t.description:''}`, in:Number(t.amount)||0, out:0});
+      if(t.fromAccount===name) entries.push({date:t.date, desc:`Transfer to ${t.toAccount}${t.description?' — '+t.description:''}`, in:Number(t.amount)||0, out:0});
+      if(t.toAccount===name) entries.push({date:t.date, desc:`Transfer from ${t.fromAccount}${t.description?' — '+t.description:''}`, in:0, out:Number(t.amount)||0});
     });
   }
   entries.sort((a,b)=> new Date(a.date)-new Date(b.date));
@@ -2741,12 +2759,15 @@ function computeLedgerResultHtml(selValue){
     const shown = led.rows.filter(r=>f(r.date));
     const openingForPeriod = before.length ? before[before.length-1].balance : led.opening;
     if(!shown.length) return `<div class="empty">No transactions for ${key} in this period. Opening/carried balance: ${money(openingForPeriod)}.</div>`;
+    const totalDebit = round2(shown.reduce((s,r)=>s+(r.out||0),0));
+    const totalCredit = round2(shown.reduce((s,r)=>s+(r.in||0),0));
     return `<table><thead><tr><th>Date</th><th>Particulars</th><th class="num">Debit</th><th class="num">Credit</th><th class="num">Balance</th></tr></thead>
     <tbody>
-    <tr><td class="muted" colspan="3">Opening balance</td><td class="num">${money(openingForPeriod)}</td><td></td></tr>
+    <tr><td class="muted" colspan="4">Opening balance</td><td class="num">${money(openingForPeriod)}</td></tr>
     ${shown.map(r=>`<tr><td class="muted">${dispDate(r.date)}</td><td>${r.desc}</td><td class="num">${r.out?money(r.out):''}</td><td class="num">${r.in?money(r.in):''}</td><td class="num">${money(r.balance)}</td></tr>`).join('')}
-    </tbody></table>
-    <div class="field-note">Closing balance: ${money(shown[shown.length-1].balance)}.</div>`;
+    </tbody>
+    <tfoot><tr style="font-weight:700;border-top:2px solid var(--ink);"><td colspan="2">Total</td><td class="num">${money(totalDebit)}</td><td class="num">${money(totalCredit)}</td><td class="num">${money(shown[shown.length-1].balance)}</td></tr></tfoot>
+    </table>`;
   }
 
   if(type==='income' || type==='expense'){
@@ -2757,25 +2778,53 @@ function computeLedgerResultHtml(selValue){
     if(!rows.length) return `<div class="empty">No entries under "${key}" in this period.</div>`;
     const total = round2(rows.reduce((s,t)=>s+(Number(t.amount)||0),0));
     return `<table><thead><tr><th>Date</th><th>Source</th><th>Description</th><th class="num">Amount</th></tr></thead>
-    <tbody>${rows.map(t=>`<tr><td class="muted">${dispDate(t.date)}</td><td class="muted">${t.kind==='sale'?'Sale':t.kind==='purchase'?'Purchase':t.kind==='income'?'Income entry':'Expense entry'}</td><td>${t.description||'<span class="muted">—</span>'}</td><td class="num">${money(t.amount)}</td></tr>`).join('')}</tbody></table>
-    <div class="field-note">Total under "${key}" this period: ${money(total)}.</div>`;
+    <tbody>${rows.map(t=>`<tr><td class="muted">${dispDate(t.date)}</td><td class="muted">${t.kind==='sale'?'Sale':t.kind==='purchase'?'Purchase':t.kind==='income'?'Income entry':'Expense entry'}</td><td>${t.description||'<span class="muted">—</span>'}</td><td class="num">${money(t.amount)}</td></tr>`).join('')}</tbody>
+    <tfoot><tr style="font-weight:700;border-top:2px solid var(--ink);"><td colspan="3">Total</td><td class="num">${money(total)}</td></tr></tfoot>
+    </table>`;
   }
 
   if(type==='client' || type==='vendor'){
     const partyKind = type==='client' ? 'sale' : 'purchase';
     const party = findParty(partyKind, key);
     if(!party) return `<div class="empty">This ${type} no longer exists.</div>`;
-    const rows = state.transactions.filter(t=> t.kind===partyKind && t.partyId==key && f(t.date)).sort((a,b)=> new Date(a.date)-new Date(b.date));
-    if(!rows.length) return `<div class="empty">No entries for ${party.name} in this period.</div>`;
-    const totalBilled = round2(rows.reduce((s,t)=>s+txTotal(t),0));
-    const totalOutstanding = round2(rows.filter(t=>!(t.docType==='credit-note'||t.docType==='debit-note')).reduce((s,t)=>s+txOutstanding(t),0));
-    return `<table><thead><tr><th>Date</th><th>${partyKind==='sale'?'Invoice':'Bill'}</th><th>Type</th><th class="num">Total</th><th class="num">Outstanding</th></tr></thead>
-    <tbody>${rows.map(t=>{
-      const label = t.docType==='credit-note' ? 'Credit Note' : t.docType==='debit-note' ? 'Debit Note' : (partyKind==='sale'?'Invoice':'Bill');
-      const outs = (t.docType==='credit-note'||t.docType==='debit-note') ? '' : money(txOutstanding(t));
-      return `<tr><td class="muted">${dispDate(t.date)}</td><td>${t.invoiceNo||'—'}</td><td class="muted">${label}</td><td class="num">${money(txTotal(t))}</td><td class="num">${outs}</td></tr>`;
-    }).join('')}</tbody></table>
-    <div class="field-note">Total billed this period: ${money(totalBilled)} · Currently outstanding: ${money(totalOutstanding)}.</div>`;
+    // Build a running statement: every invoice/bill (increases balance), every real payment (decreases
+    // balance), and every credit/debit note (decreases balance) — shown as its own dated line, even when
+    // it didn't create a cash movement (e.g. a return against an already-settled invoice), so the party's
+    // true position is always visible. Discount-type payment entries (return write-offs against a still-
+    // open invoice) are intentionally skipped here — the credit/debit note line above already represents
+    // that same value, so listing both would double-count it.
+    const allTx = state.transactions.filter(t=> t.kind===partyKind && t.partyId==key);
+    const entries = [];
+    allTx.filter(t=>!t.docType).forEach(t=>{
+      entries.push({ date:t.date, desc:`${partyKind==='sale'?'Invoice':'Bill'} ${t.invoiceNo||''}`.trim(), dr:txTotal(t), cr:0, ord:0 });
+      (t.payments||[]).forEach(p=>{
+        if(p.amount>0.004) entries.push({ date:p.date||t.date, desc:`Payment ${partyKind==='sale'?'received':'made'}${p.account?' — '+p.account:''}`, dr:0, cr:p.amount, ord:1 });
+      });
+    });
+    allTx.filter(t=>t.docType==='credit-note'||t.docType==='debit-note').forEach(t=>{
+      const label = t.docType==='credit-note' ? 'Credit Note' : 'Debit Note';
+      const val = Math.abs(txTotal(t));
+      entries.push({ date:t.date, desc:`${label} ${t.invoiceNo||''}${t.refInvoiceNo?' (against '+t.refInvoiceNo+')':''}`.trim(), dr:0, cr:val, ord:2 });
+    });
+    entries.sort((a,b)=> (new Date(a.date)-new Date(b.date)) || (a.ord-b.ord));
+    let runningBal = 0;
+    entries.forEach(e=>{ runningBal = round2(runningBal + e.dr - e.cr); e.balance = runningBal; });
+    const before = entries.filter(e=>!f(e.date));
+    const shown = entries.filter(e=>f(e.date));
+    if(!shown.length) return `<div class="empty">No entries for ${party.name} in this period.</div>`;
+    const openingForPeriod = before.length ? before[before.length-1].balance : 0;
+    const drLabel = partyKind==='sale' ? 'Invoiced' : 'Billed';
+    const crLabel = partyKind==='sale' ? 'Received' : 'Paid';
+    const totalDr = round2(shown.reduce((s,e)=>s+e.dr,0));
+    const totalCr = round2(shown.reduce((s,e)=>s+e.cr,0));
+    return `<table><thead><tr><th>Date</th><th>Particulars</th><th class="num">${drLabel}</th><th class="num">${crLabel}</th><th class="num">Balance</th></tr></thead>
+    <tbody>
+    ${isNonZero(openingForPeriod) ? `<tr><td class="muted" colspan="4">Opening balance</td><td class="num">${money(openingForPeriod)}</td></tr>` : ''}
+    ${shown.map(e=>`<tr><td class="muted">${dispDate(e.date)}</td><td>${e.desc}</td><td class="num">${e.dr?money(e.dr):''}</td><td class="num">${e.cr?money(e.cr):''}</td><td class="num">${money(e.balance)}</td></tr>`).join('')}
+    </tbody>
+    <tfoot><tr style="font-weight:700;border-top:2px solid var(--ink);"><td colspan="2">Total</td><td class="num">${money(totalDr)}</td><td class="num">${money(totalCr)}</td><td class="num">${money(shown[shown.length-1].balance)}</td></tr></tfoot>
+    </table>
+    <div class="field-note">Closing balance shown in the bottom-right cell — positive means the ${type} currently owes ${partyKind==='sale'?'you':'them (or you owe them)'}${partyKind==='sale'?'':', negative means you have a credit with them'}.</div>`;
   }
   return `<div class="empty">Unknown selection.</div>`;
 }
@@ -2815,13 +2864,17 @@ function renderAccountLedger(name){
   const shown = led.rows.filter(r=>f(r.date));
   const openingForPeriod = before.length ? before[before.length-1].balance : led.opening;
   if(!shown.length) return `<div class="empty">No transactions through ${name} in this period.</div>`;
+  const totalIn = round2(shown.reduce((s,r)=>s+r.in,0));
+  const totalOut = round2(shown.reduce((s,r)=>s+r.out,0));
   return `<table><thead><tr><th>Date</th><th>Particulars</th><th>Ref</th><th class="num">Debit</th><th class="num">Credit</th><th class="num">Balance</th><th></th></tr></thead>
   <tbody>
   <tr><td class="muted" colspan="5">Opening balance</td><td class="num">${money(openingForPeriod)}</td><td></td></tr>
   ${shown.map(r=>`<tr><td class="muted">${dispDate(r.date)}</td><td>${r.desc}${r.viaReconcile?' <span class="pill" style="background:var(--accent-soft);color:var(--accent);font-size:10px;">via Reconcile</span>':''}</td><td class="muted">${r.ref||'—'}</td><td class="num">${r.out?money(r.out):''}</td><td class="num">${r.in?money(r.in):''}</td><td class="num">${money(r.balance)}</td>
   <td style="white-space:nowrap;"><button class="btn ghost small" data-lgedit="${r.srcType}::${r.txId}::${r.payId||''}::${name}" style="margin-right:4px;">✎</button><button class="btn ghost small" data-lgdel="${r.srcType}::${r.txId}::${r.payId||''}::${name}">🗑</button></td></tr>`).join('')}
-  </tbody></table>
-  <div class="field-note">Match each row against your ${/bank/i.test(name)?'bank statement':'cash register'} using its date to reconcile. Total in ${money(shown.reduce((s,r)=>s+r.in,0))} · Total out ${money(shown.reduce((s,r)=>s+r.out,0))} · Closing balance ${money(shown[shown.length-1].balance)}. Use ✎/🗑 on a row to fix or remove a duplicate entry.</div>`;
+  </tbody>
+  <tfoot><tr style="font-weight:700;border-top:2px solid var(--ink);"><td colspan="3">Total</td><td class="num">${money(totalOut)}</td><td class="num">${money(totalIn)}</td><td class="num">${money(shown[shown.length-1].balance)}</td><td></td></tr></tfoot>
+  </table>
+  <div class="field-note">Match each row against your ${/bank/i.test(name)?'bank statement':'cash register'} using its date to reconcile. Use ✎/🗑 on a row to fix or remove a duplicate entry.</div>`;
 }
 
 /* Edit/delete a single ledger row from the Reports account-ledger view. Key is srcType::txId::payId::account
@@ -3135,10 +3188,18 @@ function renderGstRegister(kind){
   const rows = txByKind(kind).filter(t=>periodFilter(reportRange)(t.date)).filter(t=> (t.saleChannel||'local-gst')!=='local-cash').sort((a,b)=> new Date(a.date)-new Date(b.date));
   if(!rows.length) return `<div class="empty">No ${kind==='sale'?'sales':'purchase'} invoices in this period.</div>`;
   const stateCol = kind==='sale' ? `<th>State</th>` : '';
+  const totalTaxable = round2(rows.reduce((s,t)=>s+(Number(t.amount)||0),0));
+  const totalCgst = round2(rows.reduce((s,t)=>s+(t.cgst||0),0));
+  const totalSgst = round2(rows.reduce((s,t)=>s+(t.sgst||0),0));
+  const totalIgst = round2(rows.reduce((s,t)=>s+(t.igst||0),0));
+  const totalGrand = round2(rows.reduce((s,t)=>s+txTotal(t),0));
+  const stateColspan = kind==='sale' ? 5 : 4;
   return `<table><thead><tr><th>Date</th><th>Invoice</th><th>Party</th><th>GSTIN</th>${stateCol}<th class="num">Taxable</th><th class="num">CGST</th><th class="num">SGST</th><th class="num">IGST</th><th class="num">Total</th></tr></thead>
   <tbody>${rows.map(t=>`<tr><td class="muted">${dispDate(t.date)}</td><td>${t.invoiceNo||'—'} ${channelBadge(t)}</td><td>${t.description||'—'}</td><td class="muted">${t.gstin||'—'}</td>${kind==='sale'?`<td class="muted">${t.buyerState||'—'}</td>`:''}
   <td class="num">${money(t.amount)}</td><td class="num">${money(t.cgst||0)}</td><td class="num">${money(t.sgst||0)}</td><td class="num">${money(t.igst||0)}</td><td class="num">${money(txTotal(t))}</td></tr>`).join('')}
-  </tbody></table>
+  </tbody>
+  <tfoot><tr style="font-weight:700;border-top:2px solid var(--ink);"><td colspan="${stateColspan}">Total</td><td class="num">${money(totalTaxable)}</td><td class="num">${money(totalCgst)}</td><td class="num">${money(totalSgst)}</td><td class="num">${money(totalIgst)}</td><td class="num">${money(totalGrand)}</td></tr></tfoot>
+  </table>
   <div class="field-note">Cash ${kind==='sale'?'invoices':'bills'} (no GST) are left out of this register since they're not relevant for GST filing — they still appear in your ${kind==='sale'?'Sales':'Purchase'} history tab.</div>`;
 }
 
@@ -3160,9 +3221,17 @@ function stateWiseSalesSummary(){
 function renderStateWiseSales(){
   const summary = stateWiseSalesSummary();
   if(!summary.length) return `<div class="empty">No GST sales invoices in this period.</div>`;
+  const totalInvoices = summary.reduce((s,r)=>s+r.invoices,0);
+  const totalTaxable = round2(summary.reduce((s,r)=>s+r.taxable,0));
+  const totalCgst = round2(summary.reduce((s,r)=>s+r.cgst,0));
+  const totalSgst = round2(summary.reduce((s,r)=>s+r.sgst,0));
+  const totalIgst = round2(summary.reduce((s,r)=>s+r.igst,0));
+  const totalGrand = round2(summary.reduce((s,r)=>s+r.total,0));
   return `<table><thead><tr><th>Buyer's state</th><th class="num">Invoices</th><th class="num">Taxable</th><th class="num">CGST</th><th class="num">SGST</th><th class="num">IGST</th><th class="num">Total</th></tr></thead>
   <tbody>${summary.map(r=>`<tr><td>${r.state}</td><td class="num">${r.invoices}</td><td class="num">${money(r.taxable)}</td><td class="num">${money(r.cgst)}</td><td class="num">${money(r.sgst)}</td><td class="num">${money(r.igst)}</td><td class="num">${money(r.total)}</td></tr>`).join('')}
-  </tbody></table>
+  </tbody>
+  <tfoot><tr style="font-weight:700;border-top:2px solid var(--ink);"><td>Total</td><td class="num">${totalInvoices}</td><td class="num">${money(totalTaxable)}</td><td class="num">${money(totalCgst)}</td><td class="num">${money(totalSgst)}</td><td class="num">${money(totalIgst)}</td><td class="num">${money(totalGrand)}</td></tr></tfoot>
+  </table>
   <div class="field-note">This is the state-wise breakup needed for GSTR-1 filing (Table 7 for B2C, or Table 5 for B2B by state) — handy when your Amazon orders ship pan-India. Set a "Buyer's state" on each sale entry to populate this. Cash invoices (no GST) are excluded here since they're not relevant for GST filing.</div>`;
 }
 
