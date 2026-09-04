@@ -98,7 +98,9 @@
   .pill.in{ background:var(--accent-soft); color:var(--accent);}
   .pill.out{ background:var(--bad-soft); color:var(--bad);}
   .pill.pill-total{ font-size:15px; padding:4px 10px;}
-  .gst-preview-note{ font-size:14px; font-weight:600; color:var(--ink);}
+  .gst-preview-box{ max-width:360px; background:var(--paper); border:1px solid var(--rule); border-radius:8px; padding:10px 14px; margin-top:4px;}
+  .gst-preview-row{ display:flex; justify-content:space-between; gap:14px; padding:4px 0; font-size:15px; color:var(--ink);}
+  .gst-preview-row.total{ font-weight:700; font-size:18px; border-top:2px solid var(--ink); margin-top:4px; padding-top:9px;}
 
   form.inline, .inline{ display:grid; gap:22px 26px; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); align-items:end; margin-bottom:18px;}
   label{ font-size:13px; font-weight:600; color:var(--ink-soft); text-transform:uppercase; letter-spacing:.4px; display:block; margin-bottom:7px;}
@@ -326,7 +328,9 @@ function seedState(){
     homeState: '',
     categories:{
       income: ['Notebook Sales', 'Stationery Sales', 'Custom Printing Orders', 'Wrapping / Envelope Sales', 'Other Income', CREDIT_NOTE_CATEGORY],
-      expense: ['Paper & Printing Materials / COGS', 'Design Software & Tools', 'Rent', 'Salaries & Wages', 'Packaging & Shipping', 'Marketing', 'Miscellaneous Expenses', PURCHASE_RETURN_CATEGORY]
+      expense: ['Paper & Printing Materials / COGS', 'Design Software & Tools', 'Rent', 'Salaries & Wages', 'Packaging & Shipping', 'Marketing', 'Miscellaneous Expenses', PURCHASE_RETURN_CATEGORY],
+      salesDiscount: ['Sales Discount'],
+      purchaseDiscount: ['Purchase Discount']
     },
     accounts:{
       asset: [ {name:'Cash In Hand', opening:0, type:'current', subtitle:'Cash & Bank Balances'}, {name:'Bank Account', opening:0, type:'current', subtitle:'Cash & Bank Balances'}, {name:RECEIVABLE_ACCOUNT, opening:0, type:'current', subtitle:'Trade Receivables'} ],
@@ -396,6 +400,8 @@ function load(){
     p.accounts.liability.forEach(a=>{ if(a.subtitle===undefined) a.subtitle = a.type==='longterm' ? 'Long-term Liabilities' : 'Current Liabilities'; });
     p.accounts.equity.forEach(a=>{ if(a.subtitle===undefined) a.subtitle = 'Capital & Reserves'; });
     if(!p.theme) p.theme = { preset:'Lavender', colors:null };
+    if(!p.categories.salesDiscount) p.categories.salesDiscount = ['Sales Discount'];
+    if(!p.categories.purchaseDiscount) p.categories.purchaseDiscount = ['Purchase Discount'];
     if(!p.fontChoice) p.fontChoice = { preset:'Inter', customName:'', customDataUrl:'', customFormat:'' };
     return p;
   }catch(e){ return seedState(); }
@@ -806,20 +812,40 @@ function periodFilter(range){
 function isToday(dateStr){ return dateStr===todayISO(); }
 function isSameMonth(dateStr){ const d=new Date(dateStr), n=new Date(); return d.getFullYear()===n.getFullYear() && d.getMonth()===n.getMonth(); }
 
+/* Sales/Purchase Discounts — genuine discounts entered via "Mark received"/"Mark paid" (tagged with a
+   discountReason at entry time). This deliberately excludes return write-offs, which use `note` instead
+   and already reduce recorded Sales/Purchases through their own credit/debit note transaction — counting
+   those here too would subtract the same rupees a second time. */
+function discountsByCategory(kind, range){
+  const f = periodFilter(range);
+  const map = {};
+  txByKind(kind).forEach(t=>{
+    (t.payments||[]).forEach(p=>{
+      if(p.discountReason && p.discount>0.004 && f(p.date||t.date)){
+        map[p.discountReason] = round2((map[p.discountReason]||0) + p.discount);
+      }
+    });
+  });
+  return map;
+}
+function totalDiscountGiven(range){ return round2(Object.values(discountsByCategory('sale', range)).reduce((s,v)=>s+v,0)); }
+function totalDiscountReceived(range){ return round2(Object.values(discountsByCategory('purchase', range)).reduce((s,v)=>s+v,0)); }
+
 function totalIncome(range){
   const f = periodFilter(range);
-  return state.transactions.filter(t=> (t.kind==='sale'||t.kind==='income') && f(t.date)).reduce((s,t)=>s+t.amount,0);
+  const raw = state.transactions.filter(t=> (t.kind==='sale'||t.kind==='income') && f(t.date)).reduce((s,t)=>s+t.amount,0);
+  return round2(raw - totalDiscountGiven(range));
 }
 /* totalExpense() must be accrual-correct — Cost of Goods Sold (not raw purchases), adjusted for
-   opening/closing stock, same math as the Trading Account — plus Other Expenses. It must NOT simply sum
-   every purchase, because that treats every rupee spent on inventory as an expense the instant it's
-   purchased, even the portion still sitting on the shelf unsold. That version silently breaks the
-   fundamental accounting equation (Assets = Liabilities + Equity) for any business carrying stock, since
-   the unsold portion stays correctly on the Balance Sheet as an Asset while ALSO being wrongly subtracted
-   here — the same rupees hit twice. This also feeds netProfit() below (Retained Earnings on the Balance
-   Sheet, and the Dashboard's Net Profit card), so it has to agree with the Trading Account / P&L, or a
-   business with any inventory on hand would see different "profit" figures across the app and a Balance
-   Sheet that doesn't balance. */
+   opening/closing stock, same math as the Trading Account — plus Other Expenses, less any Purchase
+   Discounts received. It must NOT simply sum every purchase, because that treats every rupee spent on
+   inventory as an expense the instant it's purchased, even the portion still sitting on the shelf unsold.
+   That version silently breaks the fundamental accounting equation (Assets = Liabilities + Equity) for
+   any business carrying stock, since the unsold portion stays correctly on the Balance Sheet as an Asset
+   while ALSO being wrongly subtracted here — the same rupees hit twice. This also feeds netProfit() below
+   (Retained Earnings on the Balance Sheet, and the Dashboard's Net Profit card), so it has to agree with
+   the Trading Account / P&L, or a business with any inventory on hand would see different "profit" figures
+   across the app and a Balance Sheet that doesn't balance. */
 function totalExpense(range){
   const opening = openingStockValue(range);
   const purchases = purchasesTotal(range);
@@ -827,7 +853,7 @@ function totalExpense(range){
   const cogs = opening + purchases - closing;
   const f = periodFilter(range);
   const otherExpense = state.transactions.filter(t=>t.kind==='expense' && f(t.date)).reduce((s,t)=>s+t.amount,0);
-  return cogs + otherExpense;
+  return round2(cogs + otherExpense - totalDiscountReceived(range));
 }
 function netProfit(range){ return totalIncome(range) - totalExpense(range); }
 function salesTotal(range){ const f=periodFilter(range); return state.transactions.filter(t=>t.kind==='sale' && f(t.date)).reduce((s,t)=>s+t.amount,0); }
@@ -1156,6 +1182,12 @@ function openMarkSettledModal(txId){
           <select id="mrAccount">${accounts.map(a=>`<option value="${a.name}">${a.name}</option>`).join('')}</select>
         </div>
         <div><label>Discount given now (optional, ${state.currency})</label><input id="mrDiscount" type="number" step="any" min="0" value="0"></div>
+        <div id="mrDiscountReasonField" style="display:none;"><label>Reason</label>
+          <select id="mrDiscountReason">
+            ${(isSale ? state.categories.salesDiscount : state.categories.purchaseDiscount).map(c=>`<option value="${c}">${c}</option>`).join('')}
+            <option value="__new__">＋ Add new title…</option>
+          </select>
+        </div>
         <div class="field-note" id="mrPreview" style="margin:0;"></div>` : `<div class="field-note" style="margin:0;">This entry is fully settled. You can still edit the date, amount, account, or discount on the payments above, or remove one.</div>`}
       </div>
       <div class="row">
@@ -1196,16 +1228,34 @@ function openMarkSettledModal(txId){
   const discInp = document.getElementById('mrDiscount');
   const amountInp = document.getElementById('mrAmount');
   const preview = document.getElementById('mrPreview');
+  const discReasonField = document.getElementById('mrDiscountReasonField');
+  const discReasonSelect = document.getElementById('mrDiscountReason');
   function updatePreview(){
     if(!amountInp) return;
     const amt = round2(parseFloat(amountInp.value)||0);
     const disc = round2(parseFloat(discInp.value)||0);
     const remaining = round2(outstanding - amt - disc);
+    if(discReasonField) discReasonField.style.display = disc>0 ? '' : 'none';
     if(remaining > 0.004) preview.textContent = `Part payment — ${money(remaining)} will still be pending after this.`;
     else if(remaining < -0.004) preview.textContent = `That's more than the outstanding balance — reduce the amount or discount.`;
     else preview.textContent = `This will fully settle the ${isSale?'invoice':'bill'}.`;
   }
   if(amountInp){ updatePreview(); amountInp.addEventListener('input', updatePreview); discInp.addEventListener('input', updatePreview); }
+  if(discReasonSelect){
+    discReasonSelect.addEventListener('change', ()=>{
+      if(discReasonSelect.value==='__new__'){
+        const catGroup = isSale ? 'salesDiscount' : 'purchaseDiscount';
+        const name = prompt(`New ${isSale?'sales':'purchase'} discount title:`);
+        if(name && name.trim()){
+          const clean = name.trim();
+          if(!state.categories[catGroup].includes(clean)){ state.categories[catGroup].push(clean); save(); }
+          const opt = document.createElement('option'); opt.value=clean; opt.textContent=clean;
+          discReasonSelect.insertBefore(opt, discReasonSelect.lastElementChild);
+          discReasonSelect.value = clean;
+        } else { discReasonSelect.value = state.categories[isSale?'salesDiscount':'purchaseDiscount'][0]; }
+      }
+    });
+  }
 
   document.getElementById('mrCancel').addEventListener('click', ()=>{ modal.style.display='none'; });
   modal.addEventListener('click', e=>{ if(e.target===modal) modal.style.display='none'; });
@@ -1218,8 +1268,9 @@ function openMarkSettledModal(txId){
     if(amt<=0 && disc<=0){ toast('Enter an amount received/paid or a discount.'); return; }
     if(amt>0 && !account){ toast('Choose an account.'); return; }
     if(round2(amt+disc-outstanding) > 0.004){ toast('Amount entered adds up to more than the outstanding balance.'); return; }
+    if(disc>0 && (!discReasonSelect.value || discReasonSelect.value==='__new__')){ toast('Pick a reason for the discount.'); return; }
     if(amt>0) t.payments.push({ id: uid(), date: payDate, amount: amt, account, discount: 0 });
-    if(disc>0) t.payments.push({ id: uid(), date: payDate, amount: 0, account: null, discount: disc });
+    if(disc>0) t.payments.push({ id: uid(), date: payDate, amount: 0, account: null, discount: disc, discountReason: discReasonSelect.value });
     const newOutstanding = txOutstanding(t);
     if(newOutstanding<=0.004 && amt>0) t.account = account;
     save(); modal.style.display='none';
@@ -1689,13 +1740,14 @@ function renderGeneralEntryTab(main){
             <option value="expense">Expense (money out)</option>
             <option value="income">Income (money in)</option>
             <option value="contra">Contra (transfer between accounts)</option>
+            <option value="split">Split Entry (one payment, multiple titles — e.g. an EMI)</option>
           </select>
         </div>
         <div><label>Date</label><input name="date" type="date" value="${todayISO()}" required></div>
         <div id="catField"><label>Title / Category</label>
           <select name="category" id="catSelect"></select>
         </div>
-        <div><label>Amount (${state.currency})</label><input name="amount" type="number" step="any" min="0.01" required></div>
+        <div id="amountField"><label>Amount (${state.currency})</label><input name="amount" type="number" step="any" min="0.01" required></div>
         <div id="singleAcctField"><label id="acctLabel">Paid from</label>
           <select name="account">${cashBankAccounts().map(a=>`<option value="${a.name}">${a.name}</option>`).join('')}</select>
         </div>
@@ -1717,7 +1769,28 @@ function renderGeneralEntryTab(main){
             <optgroup label="Expense titles">${state.categories.expense.map(c=>`<option value="${c}">${c}</option>`).join('')}</optgroup>
           </select>
         </div>
+        <div id="splitAcctField" style="display:none;"><label>Account</label>
+          <select id="splitAccount">${cashBankAccounts().map(a=>`<option value="${a.name}">${a.name}</option>`).join('')}</select>
+        </div>
+        <div id="splitDirField" style="display:none;"><label>Direction</label>
+          <select id="splitDirection">
+            <option value="out">Money going OUT of this account</option>
+            <option value="in">Money coming INTO this account</option>
+          </select>
+        </div>
+        <div id="splitTotalField" style="display:none;"><label>Total Amount (${state.currency})</label><input type="number" step="any" min="0.01" id="splitTotalAmount" placeholder="e.g. total EMI"></div>
         <div class="field-note">Tip: a transfer from Bank/Cash to Owner's Capital records a drawing; from Owner's Capital to Bank/Cash records a capital top-up. For a loan (Liability account), it's the opposite way round: a transfer from Bank/Cash to the loan account records an EMI's principal / a repayment — the loan balance goes down; from the loan account to Bank/Cash records fresh loan proceeds received — the loan balance goes up. You can also pick an Income title as "Transfer from" (records it as income into the Asset account on the other side) or an Expense title as "Transfer to" (records it as an expense paid from the Asset account on the other side) — those are logged as a normal Income/Expense entry, not a transfer. Liability and Equity accounts can only be used for a plain transfer, paired with another real account.</div>
+        <div id="splitLinesArea" style="display:none; margin-top:6px; grid-column:1/-1;">
+          <label style="margin-bottom:6px;">Split into</label>
+          <table class="line-tbl">
+            <thead><tr><th>Title / Account</th><th class="num">Amount</th><th></th></tr></thead>
+            <tbody id="splitLinesBody"></tbody>
+          </table>
+          <div class="row" style="margin-top:8px; align-items:center;">
+            <button type="button" class="btn ghost small" id="addSplitLineBtn">＋ Add another line</button>
+            <div class="field-note" id="splitTotalNote" style="margin:0;"></div>
+          </div>
+        </div>
         <div><label>Description (optional)</label><input name="description" placeholder="Note / party name"></div>
         <div><button class="btn primary" type="submit" id="txSubmitBtn">Save entry</button> <button class="btn ghost" type="button" id="cancelEditBtn" style="display:none;">Cancel edit</button></div>
       </form>
@@ -1728,12 +1801,13 @@ function renderGeneralEntryTab(main){
       <table>
         <thead><tr><th>Date</th><th>Type</th><th>Title</th><th>Description</th><th>Account</th><th class="num">Amount</th><th></th></tr></thead>
         <tbody>${rows.length ? rows.map(t=>{
+          const splitBadge = t.splitGroupId ? ` <span class="pill" style="background:var(--amber-soft);color:var(--amber);font-size:10px;">⚡ Split</span>` : '';
           if(t.kind==='contra'){
-            return `<tr><td class="muted">${dispDate(t.date)}</td><td><span class="pill" style="background:var(--accent-soft,#eef); color:var(--accent,#446);">⇄ Transfer</span></td><td>Fund Transfer</td><td>${t.description||'<span class="muted">—</span>'}</td><td class="muted">${t.fromAccount} → ${t.toAccount}</td>
+            return `<tr><td class="muted">${dispDate(t.date)}</td><td><span class="pill" style="background:var(--accent-soft,#eef); color:var(--accent,#446);">⇄ Transfer</span>${splitBadge}</td><td>Fund Transfer</td><td>${t.description||'<span class="muted">—</span>'}</td><td class="muted">${t.fromAccount} → ${t.toAccount}</td>
             <td class="num">${money(t.amount)}</td>
             <td><button class="btn ghost small" data-edit="${t.id}">✎ Edit</button> <button class="btn ghost small" data-del="${t.id}">Delete</button></td></tr>`;
           }
-          return `<tr><td class="muted">${dispDate(t.date)}</td><td><span class="pill ${t.flow}">${t.kind==='income'?'Income':'Expense'}</span></td><td>${t.category}</td><td>${t.description||'<span class="muted">—</span>'}</td><td class="muted">${t.account}</td>
+          return `<tr><td class="muted">${dispDate(t.date)}</td><td><span class="pill ${t.flow}">${t.kind==='income'?'Income':'Expense'}</span>${splitBadge}</td><td>${t.category}</td><td>${t.description||'<span class="muted">—</span>'}</td><td class="muted">${t.account}</td>
           <td class="num"><span class="pill ${t.flow}">${t.flow==='in'?'+':'−'}${money(t.amount)}</span></td>
           <td><button class="btn ghost small" data-edit="${t.id}">✎ Edit</button> <button class="btn ghost small" data-del="${t.id}">Delete</button></td></tr>`;
         }).join('') : `<tr><td colspan="7" class="empty">No entries yet.</td></tr>`}
@@ -1746,23 +1820,72 @@ function renderGeneralEntryTab(main){
   const kindSelect = document.getElementById('kindSelect');
   const catSelect = document.getElementById('catSelect');
   const catField = document.getElementById('catField');
+  const amountField = document.getElementById('amountField');
   const acctLabel = document.getElementById('acctLabel');
   const singleAcctField = document.getElementById('singleAcctField');
   const fromAcctField = document.getElementById('fromAcctField');
   const toAcctField = document.getElementById('toAcctField');
+  const splitAcctField = document.getElementById('splitAcctField');
+  const splitDirField = document.getElementById('splitDirField');
+  const splitTotalField = document.getElementById('splitTotalField');
+  const splitLinesArea = document.getElementById('splitLinesArea');
+  const splitLinesBody = document.getElementById('splitLinesBody');
+  const splitTotalNote = document.getElementById('splitTotalNote');
+  const splitDirection = document.getElementById('splitDirection');
+  const splitTotalAmount = document.getElementById('splitTotalAmount');
+
+  function splitLineOptionsHtml(){
+    const dir = splitDirection.value;
+    const parts = [];
+    if(dir==='out') parts.push(`<optgroup label="Expense titles">${state.categories.expense.map(c=>`<option value="expense::${c}">${c}</option>`).join('')}</optgroup>`);
+    if(dir==='in') parts.push(`<optgroup label="Income titles">${state.categories.income.map(c=>`<option value="income::${c}">${c}</option>`).join('')}</optgroup>`);
+    parts.push(`<optgroup label="Liabilities">${state.accounts.liability.map(a=>`<option value="liability::${a.name}">${a.name}</option>`).join('')}</optgroup>`);
+    parts.push(`<optgroup label="Equity">${state.accounts.equity.map(a=>`<option value="equity::${a.name}">${a.name}</option>`).join('')}</optgroup>`);
+    return parts.join('');
+  }
+  function splitLineRowHtml(){
+    return `<tr data-splitline>
+      <td><select class="splitLineTitle">${splitLineOptionsHtml()}</select></td>
+      <td class="num"><input type="number" step="any" min="0.01" class="splitLineAmount" placeholder="Amount"></td>
+      <td><button type="button" class="btn ghost small splitLineRemove">×</button></td>
+    </tr>`;
+  }
+  function updateSplitTotal(){
+    const lines = [...splitLinesBody.querySelectorAll('[data-splitline]')];
+    const sum = round2(lines.reduce((s,row)=> s + (parseFloat(row.querySelector('.splitLineAmount').value)||0), 0));
+    const target = round2(parseFloat(splitTotalAmount.value)||0);
+    const matches = target>0 && Math.abs(sum-target)<0.005;
+    splitTotalNote.innerHTML = `Lines add up to <b>${money(sum)}</b> — target total is <b>${money(target)}</b>. ${matches ? '<span style="color:var(--good);">✓ Matches — ready to save.</span>' : '<span style="color:var(--bad);">✗ Does not match yet.</span>'}`;
+    return matches;
+  }
+  function refreshSplitLines(){
+    splitLinesBody.querySelectorAll('.splitLineTitle').forEach(sel=>{ sel.innerHTML = splitLineOptionsHtml(); });
+    updateSplitTotal();
+  }
 
   function refreshFields(){
     const k = kindSelect.value;
     if(k==='contra'){
-      catField.style.display='none';
+      catField.style.display='none'; amountField.style.display='';
       singleAcctField.style.display='none';
       fromAcctField.style.display='';
       toAcctField.style.display='';
+      splitAcctField.style.display='none'; splitDirField.style.display='none'; splitTotalField.style.display='none'; splitLinesArea.style.display='none';
+    } else if(k==='split'){
+      catField.style.display='none'; amountField.style.display='none';
+      singleAcctField.style.display='none'; fromAcctField.style.display='none'; toAcctField.style.display='none';
+      splitAcctField.style.display=''; splitDirField.style.display=''; splitTotalField.style.display=''; splitLinesArea.style.display='';
+      if(!splitLinesBody.querySelector('[data-splitline]')){
+        splitLinesBody.insertAdjacentHTML('beforeend', splitLineRowHtml());
+        splitLinesBody.insertAdjacentHTML('beforeend', splitLineRowHtml());
+      }
+      refreshSplitLines();
     } else {
-      catField.style.display='';
+      catField.style.display=''; amountField.style.display='';
       singleAcctField.style.display='';
       fromAcctField.style.display='none';
       toAcctField.style.display='none';
+      splitAcctField.style.display='none'; splitDirField.style.display='none'; splitTotalField.style.display='none'; splitLinesArea.style.display='none';
       const cats = state.categories[k];
       catSelect.innerHTML = cats.map(c=>`<option value="${c}">${c}</option>`).join('') + `<option value="__new__">＋ Add new title…</option>`;
       acctLabel.textContent = k==='income' ? 'Received into' : 'Paid from';
@@ -1770,6 +1893,24 @@ function renderGeneralEntryTab(main){
   }
   refreshFields();
   kindSelect.addEventListener('change', refreshFields);
+  splitDirection.addEventListener('change', refreshSplitLines);
+  splitTotalAmount.addEventListener('input', updateSplitTotal);
+  document.getElementById('addSplitLineBtn').addEventListener('click', ()=>{
+    splitLinesBody.insertAdjacentHTML('beforeend', splitLineRowHtml());
+    const lastRow = splitLinesBody.lastElementChild;
+    lastRow.querySelector('.splitLineAmount').addEventListener('input', updateSplitTotal);
+    lastRow.querySelector('.splitLineRemove').addEventListener('click', ()=>{
+      if(splitLinesBody.querySelectorAll('[data-splitline]').length<=1){ toast('A split needs at least one line.'); return; }
+      lastRow.remove(); updateSplitTotal();
+    });
+    updateSplitTotal();
+  });
+  splitLinesBody.addEventListener('input', e=>{ if(e.target.classList.contains('splitLineAmount')) updateSplitTotal(); });
+  splitLinesBody.addEventListener('click', e=>{
+    const btn = e.target.closest('.splitLineRemove'); if(!btn) return;
+    if(splitLinesBody.querySelectorAll('[data-splitline]').length<=1){ toast('A split needs at least one line.'); return; }
+    btn.closest('[data-splitline]').remove(); updateSplitTotal();
+  });
 
   catSelect.addEventListener('change', ()=>{
     if(catSelect.value==='__new__'){
@@ -1789,9 +1930,54 @@ function renderGeneralEntryTab(main){
   document.getElementById('txForm').addEventListener('submit', e=>{
     e.preventDefault();
     const f = new FormData(e.target);
+    const kind = f.get('kind');
+
+    if(kind==='split'){
+      const account = document.getElementById('splitAccount').value;
+      const direction = splitDirection.value;
+      const target = round2(parseFloat(splitTotalAmount.value)||0);
+      const date = f.get('date')||todayISO();
+      const description = f.get('description')||'';
+      if(!account){ toast('Choose an account.'); return; }
+      if(!target || target<=0){ toast('Enter the total amount for this split.'); return; }
+      const lineRows = [...splitLinesBody.querySelectorAll('[data-splitline]')];
+      const lines = lineRows.map(row=>{
+        const [type, key] = row.querySelector('.splitLineTitle').value.split('::');
+        const amt = round2(parseFloat(row.querySelector('.splitLineAmount').value)||0);
+        return { type, key, amount: amt };
+      });
+      if(lines.some(l=>!(l.amount>0))){ toast('Every split line needs an amount greater than 0.'); return; }
+      const sum = round2(lines.reduce((s,l)=>s+l.amount,0));
+      if(Math.abs(sum-target) >= 0.005){
+        toast(`Split lines add up to ${money(sum)} but the total amount is ${money(target)} — these must match exactly before this can be saved.`);
+        updateSplitTotal();
+        return;
+      }
+      // Build the underlying transactions: an Expense/Income entry for a title line, a Contra for a
+      // Liability/Equity line — same routing this app already uses elsewhere — all tagged with a shared
+      // splitGroupId so the history table can show they belong to one real-world payment.
+      const splitGroupId = uid();
+      const created = [];
+      lines.forEach(l=>{
+        if(l.type==='expense'){
+          created.push({ id:uid(), date, kind:'expense', category:l.key, amount:l.amount, account, description, flow:'out', splitGroupId });
+        } else if(l.type==='income'){
+          created.push({ id:uid(), date, kind:'income', category:l.key, amount:l.amount, account, description, flow:'in', splitGroupId });
+        } else if(l.type==='liability' || l.type==='equity'){
+          const fromAccount = direction==='out' ? account : l.key;
+          const toAccount = direction==='out' ? l.key : account;
+          created.push({ id:uid(), date, kind:'contra', fromAccount, toAccount, amount:l.amount, description, splitGroupId });
+        }
+      });
+      created.forEach(t=> state.transactions.push(t));
+      save();
+      toast(`Split entry saved — ${money(target)} across ${lines.length} line(s).`);
+      render();
+      return;
+    }
+
     const amount = parseFloat(f.get('amount'));
     if(!amount || amount<=0){ toast('Enter a valid amount.'); return; }
-    const kind = f.get('kind');
 
     if(kind==='contra'){
       const fromAccount = f.get('fromAccount');
@@ -2011,7 +2197,7 @@ function renderGstTxTab(main, kind, title, subtitle, catGroup){
         <div class="field-note">Adjust the total up or down by a small amount so it matches the vendor's bill exactly (e.g. if their bill total is already rounded). Leave 0 if not needed.</div>` : ''}
         ${kind==='sale' ? `<div class="inline" style="margin-top:4px;"><div><label>Round off (${state.currency})</label><input name="roundOff" id="roundOffInput" type="number" step="any" value="0"></div></div>
         <div class="field-note">Adjust the total up or down by a small amount — it flows into the invoice total, the Sales Register, and outstanding balance. Leave 0 if not needed.</div>` : ''}
-        <div class="row" id="gstPreview" style="margin-top:12px;"></div>
+        <div class="row" id="gstPreview" style="margin-top:12px; justify-content:flex-end;"></div>
         <div class="field-note" id="supplyTypeNote" style="margin-top:4px;"></div>
         <div class="row" style="margin-top:12px;"><button class="btn primary" type="submit" id="txSubmitBtn">Save ${kind==='sale'?'invoice':'bill'}</button><button class="btn ghost" type="button" id="cancelEditBtn" style="display:none;">Cancel edit</button></div>
       </form>
@@ -2218,9 +2404,15 @@ function renderGstTxTab(main, kind, title, subtitle, catGroup){
     const taxable = round2(sumAmount());
     const g = lineGstBreakup();
     const tax = g.cgst+g.sgst+g.igst;
-    gstPreview.innerHTML = g.supplyType==='inter'
-      ? `<div class="field-note gst-preview-note">Taxable ${money(taxable)} · IGST ${money(g.igst)} · Total invoice value ${money(taxable+tax)}</div>`
-      : `<div class="field-note gst-preview-note">Taxable ${money(taxable)} · CGST ${money(g.cgst)} + SGST ${money(g.sgst)} · Total invoice value ${money(taxable+tax)}</div>`;
+    const taxRowsHtml = g.supplyType==='inter'
+      ? `<div class="gst-preview-row"><span>IGST</span><span class="num">${money(g.igst)}</span></div>`
+      : `<div class="gst-preview-row"><span>CGST</span><span class="num">${money(g.cgst)}</span></div>
+         <div class="gst-preview-row"><span>SGST</span><span class="num">${money(g.sgst)}</span></div>`;
+    gstPreview.innerHTML = `<div class="gst-preview-box">
+      <div class="gst-preview-row"><span>Taxable Value</span><span class="num">${money(taxable)}</span></div>
+      ${taxRowsHtml}
+      <div class="gst-preview-row total"><span>Total Invoice Value</span><span class="num">${money(taxable+tax)}</span></div>
+    </div>`;
     const partyCode = gstStateCode(partyGstinInput.value);
     const bizCode = gstStateCode(state.businessGSTIN);
     const partyStateName = buyerStateInput ? buyerStateInput.value : (selectedParty ? selectedParty.state : '');
@@ -2737,12 +2929,16 @@ function ledgerGroupOptionsHtml(){
   const expOpts = state.categories.expense.filter(c=>c!==PURCHASE_RETURN_CATEGORY).map(c=>opt(`expense::${c}`, c)).join('');
   const clientOpts = state.clients.map(c=>opt(`client::${c.id}`, c.name)).join('');
   const vendorOpts = state.vendors.map(v=>opt(`vendor::${v.id}`, v.name)).join('');
+  const salesDiscOpts = state.categories.salesDiscount.map(c=>opt(`salesdisc::${c}`, c)).join('');
+  const purchDiscOpts = state.categories.purchaseDiscount.map(c=>opt(`purchdisc::${c}`, c)).join('');
   return `
     <optgroup label="Assets">${assetOpts||''}</optgroup>
     <optgroup label="Liabilities">${liabOpts||''}</optgroup>
     <optgroup label="Equity">${eqOpts||''}</optgroup>
     <optgroup label="Income titles">${incOpts||''}</optgroup>
     <optgroup label="Expense titles">${expOpts||''}</optgroup>
+    <optgroup label="Sales Discounts">${salesDiscOpts||''}</optgroup>
+    <optgroup label="Purchase Discounts">${purchDiscOpts||''}</optgroup>
     <optgroup label="Clients">${clientOpts||''}</optgroup>
     <optgroup label="Vendors">${vendorOpts||''}</optgroup>
   `;
@@ -2826,6 +3022,25 @@ function computeLedgerResultHtml(selValue){
     </table>
     <div class="field-note">Closing balance shown in the bottom-right cell — positive means the ${type} currently owes ${partyKind==='sale'?'you':'them (or you owe them)'}${partyKind==='sale'?'':', negative means you have a credit with them'}.</div>`;
   }
+  if(type==='salesdisc' || type==='purchdisc'){
+    const kind = type==='salesdisc' ? 'sale' : 'purchase';
+    const rows = [];
+    txByKind(kind).forEach(t=>{
+      (t.payments||[]).forEach(p=>{
+        if(p.discountReason===key && p.discount>0.004 && f(p.date||t.date)){
+          rows.push({ date:p.date||t.date, desc:`${t.description||''}${t.invoiceNo?' — '+t.invoiceNo:''}`.trim()||'—', amount:p.discount });
+        }
+      });
+    });
+    rows.sort((a,b)=> new Date(a.date)-new Date(b.date));
+    if(!rows.length) return `<div class="empty">No entries under "${key}" in this period.</div>`;
+    const total = round2(rows.reduce((s,r)=>s+r.amount,0));
+    return `<table><thead><tr><th>Date</th><th>Against</th><th class="num">Amount</th></tr></thead>
+    <tbody>${rows.map(r=>`<tr><td class="muted">${dispDate(r.date)}</td><td>${r.desc}</td><td class="num">${money(r.amount)}</td></tr>`).join('')}</tbody>
+    <tfoot><tr style="font-weight:700;border-top:2px solid var(--ink);"><td colspan="2">Total</td><td class="num">${money(total)}</td></tr></tfoot>
+    </table>`;
+  }
+
   return `<div class="empty">Unknown selection.</div>`;
 }
 
@@ -3187,18 +3402,20 @@ function renderGstSummary(){
 function renderGstRegister(kind){
   const rows = txByKind(kind).filter(t=>periodFilter(reportRange)(t.date)).filter(t=> (t.saleChannel||'local-gst')!=='local-cash').sort((a,b)=> new Date(a.date)-new Date(b.date));
   if(!rows.length) return `<div class="empty">No ${kind==='sale'?'sales':'purchase'} invoices in this period.</div>`;
+  const txDiscountTotal = (t)=> round2((t.payments||[]).reduce((s,p)=> s + (p.discountReason && p.discount>0.004 ? p.discount : 0), 0));
   const stateCol = kind==='sale' ? `<th>State</th>` : '';
   const totalTaxable = round2(rows.reduce((s,t)=>s+(Number(t.amount)||0),0));
   const totalCgst = round2(rows.reduce((s,t)=>s+(t.cgst||0),0));
   const totalSgst = round2(rows.reduce((s,t)=>s+(t.sgst||0),0));
   const totalIgst = round2(rows.reduce((s,t)=>s+(t.igst||0),0));
   const totalGrand = round2(rows.reduce((s,t)=>s+txTotal(t),0));
+  const totalDiscount = round2(rows.reduce((s,t)=>s+txDiscountTotal(t),0));
   const stateColspan = kind==='sale' ? 5 : 4;
-  return `<table><thead><tr><th>Date</th><th>Invoice</th><th>Party</th><th>GSTIN</th>${stateCol}<th class="num">Taxable</th><th class="num">CGST</th><th class="num">SGST</th><th class="num">IGST</th><th class="num">Total</th></tr></thead>
+  return `<table><thead><tr><th>Date</th><th>Invoice</th><th>Party</th><th>GSTIN</th>${stateCol}<th class="num">Taxable</th><th class="num">CGST</th><th class="num">SGST</th><th class="num">IGST</th><th class="num">Total</th><th class="num">Discount</th></tr></thead>
   <tbody>${rows.map(t=>`<tr><td class="muted">${dispDate(t.date)}</td><td>${t.invoiceNo||'—'} ${channelBadge(t)}</td><td>${t.description||'—'}</td><td class="muted">${t.gstin||'—'}</td>${kind==='sale'?`<td class="muted">${t.buyerState||'—'}</td>`:''}
-  <td class="num">${money(t.amount)}</td><td class="num">${money(t.cgst||0)}</td><td class="num">${money(t.sgst||0)}</td><td class="num">${money(t.igst||0)}</td><td class="num">${money(txTotal(t))}</td></tr>`).join('')}
+  <td class="num">${money(t.amount)}</td><td class="num">${money(t.cgst||0)}</td><td class="num">${money(t.sgst||0)}</td><td class="num">${money(t.igst||0)}</td><td class="num">${money(txTotal(t))}</td><td class="num">${txDiscountTotal(t)>0.004?money(txDiscountTotal(t)):'—'}</td></tr>`).join('')}
   </tbody>
-  <tfoot><tr style="font-weight:700;border-top:2px solid var(--ink);"><td colspan="${stateColspan}">Total</td><td class="num">${money(totalTaxable)}</td><td class="num">${money(totalCgst)}</td><td class="num">${money(totalSgst)}</td><td class="num">${money(totalIgst)}</td><td class="num">${money(totalGrand)}</td></tr></tfoot>
+  <tfoot><tr style="font-weight:700;border-top:2px solid var(--ink);"><td colspan="${stateColspan}">Total</td><td class="num">${money(totalTaxable)}</td><td class="num">${money(totalCgst)}</td><td class="num">${money(totalSgst)}</td><td class="num">${money(totalIgst)}</td><td class="num">${money(totalGrand)}</td><td class="num">${money(totalDiscount)}</td></tr></tfoot>
   </table>
   <div class="field-note">Cash ${kind==='sale'?'invoices':'bills'} (no GST) are left out of this register since they're not relevant for GST filing — they still appear in your ${kind==='sale'?'Sales':'Purchase'} history tab.</div>`;
 }
@@ -3291,11 +3508,21 @@ function renderPnL(){
   // off the statement — a category isn't worth a line if it shows ₹0.
   const inc = Object.entries(incomeByCat).filter(([,v])=>isNonZero(v));
   const exp = Object.entries(expenseByCat).filter(([,v])=>isNonZero(v));
-  const totalInc = inc.reduce((s,[,v])=>s+v,0), totalExp = exp.reduce((s,[,v])=>s+v,0);
-  const profit = totalInc-totalExp;
+  // Sales Discounts Given sit on the Dr (expense) side as "Discount Allowed" — standard treatment —
+  // and Purchase Discounts Received sit on the Cr (income) side as "Discount Received". Mathematically
+  // identical to netting them against Sales/Purchases directly; this is just the conventional ledger
+  // presentation, and it's what totalIncome()/totalExpense() already do under the hood, so Net Profit
+  // here always agrees with the Dashboard, Balance Sheet retained earnings, etc.
+  const salesDisc = Object.entries(discountsByCategory('sale', reportRange)).filter(([,v])=>isNonZero(v));
+  const purchDisc = Object.entries(discountsByCategory('purchase', reportRange)).filter(([,v])=>isNonZero(v));
+  const totalInc = round2(inc.reduce((s,[,v])=>s+v,0) - salesDisc.reduce((s,[,v])=>s+v,0));
+  const totalExp = round2(exp.reduce((s,[,v])=>s+v,0) - purchDisc.reduce((s,[,v])=>s+v,0));
+  const profit = round2(totalInc-totalExp);
 
   const drRows = exp.map(([c,v])=>({label:`To ${c}`, value:v}));
+  salesDisc.forEach(([c,v])=> drRows.push({label:`To ${c} (Discount Allowed)`, value:v}));
   const crRows = inc.map(([c,v])=>({label:`By ${c}`, value:v}));
+  purchDisc.forEach(([c,v])=> crRows.push({label:`By ${c} (Discount Received)`, value:v}));
   if(profit>=0) drRows.push({label:'To Net Profit c/d', value:profit});
   else crRows.push({label:'By Net Loss c/d', value:-profit});
   const drTotal = round2(drRows.reduce((s,r)=>s+r.value,0));
