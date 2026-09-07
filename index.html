@@ -4,14 +4,18 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>AEC Digital Printers — Accounts Book</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%236B84D1'/%3E%3Ctext x='32' y='44' font-family='Georgia,serif' font-size='36' font-weight='700' fill='white' text-anchor='middle'%3EA%3C/text%3E%3C/svg%3E">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://accounts.google.com/gsi/client" async defer></script>
 <link rel="manifest" href="manifest.json">
 <meta name="theme-color" content="#6B84D1">
+<meta name="color-scheme" content="light">
 <style>
   :root{
+    color-scheme: light;
     --paper:#F9F8FC;
     --ink:#3F3B54;
     --ink-soft:#837FA0;
@@ -99,6 +103,9 @@
   .pill.out{ background:var(--bad-soft); color:var(--bad);}
   .pill.pill-total{ font-size:15px; padding:4px 10px;}
   .gst-preview-box{ max-width:360px; background:var(--paper); border:1px solid var(--rule); border-radius:8px; padding:10px 14px; margin-top:4px;}
+  .info-icon{ display:inline-flex; align-items:center; justify-content:center; width:16px; height:16px; border-radius:50%; background:var(--accent-soft); color:var(--accent); font-size:11px; font-weight:700; font-style:normal; cursor:help; position:relative; margin-left:5px; vertical-align:middle; flex-shrink:0;}
+  .info-icon:hover::after, .info-icon:focus::after{ content:attr(data-tip); position:absolute; left:0; top:130%; z-index:120; background:var(--ink); color:#fff; padding:9px 11px; border-radius:7px; font-size:12px; font-weight:400; width:270px; line-height:1.45; box-shadow:var(--shadow); white-space:normal; text-transform:none; letter-spacing:normal;}
+  @media (max-width:920px){ .info-icon:hover::after, .info-icon:focus::after{ width:200px; }}
   .gst-preview-row{ display:flex; justify-content:space-between; gap:14px; padding:4px 0; font-size:15px; color:var(--ink);}
   .gst-preview-row.total{ font-weight:700; font-size:18px; border-top:2px solid var(--ink); margin-top:4px; padding-top:9px;}
 
@@ -124,6 +131,7 @@
   .chip.acc{ padding-left:10px;}
   .chip .bal{ font-family:'JetBrains Mono',monospace; color:var(--ink-soft);}
   .field-note{ font-size:11px; color:var(--ink-soft); margin-top:5px;}
+  .info-icon{ display:inline-flex; align-items:center; justify-content:center; width:16px; height:16px; border-radius:50%; background:var(--accent-soft); color:var(--accent); font-size:11px; font-weight:700; font-style:normal; cursor:help; margin-left:4px; vertical-align:middle;}
   .settings-grid{ display:grid; grid-template-columns:repeat(auto-fit,minmax(240px,1fr)); gap:16px;}
   .statement{ max-width:640px;}
   .statement .line{ display:flex; justify-content:space-between; padding:6px 2px; border-bottom:1px dashed var(--rule); font-size:13.5px;}
@@ -542,6 +550,15 @@ function channelBadge(t){
   if(ch==='local-cash') return `<span class="pill" style="background:#fef3c7;color:#92400e;">Cash</span>`;
   if(ch==='marketplace') return `<span class="pill" style="background:#dbeafe;color:#1e40af;">Marketplace</span>`;
   return '';
+}
+/* A small hover-only info icon replacing what used to be a permanently-visible paragraph of guidance
+   text — the tip is still there, it just only shows on hover/focus (title attribute), so the form isn't
+   cluttered with explanatory text by default. Used for static tips only, never for a message that changes
+   with what the person is doing (those stay as visible text, since hiding an active status behind a hover
+   would be actively unhelpful). */
+function infoIcon(text){
+  const safe = String(text).replace(/"/g,'&quot;');
+  return `<span class="info-icon" data-tip="${safe}" title="${safe}" tabindex="0">i</span>`;
 }
 function toast(msg){
   const t = document.getElementById('toast');
@@ -1545,7 +1562,22 @@ nav.addEventListener('click', e=>{
 });
 function goTab(tab){ activeTab=tab; editingTxId=null; editingItemId=null; [...nav.querySelectorAll('button')].forEach(b=>b.classList.toggle('active', b.dataset.tab===tab)); render(); }
 
+/* Defensive, self-healing check for fields introduced by recent features (Discount titles, Appearance
+   theme/font). Runs on every render, not just at load() — so a browser's saved data created across
+   several earlier versions of this file always has safe defaults for these, however it got here,
+   instead of a missing field throwing partway through a render and leaving that tab blank. */
+function ensureNewFieldDefaults(){
+  if(!state.categories) state.categories = {income:[], expense:[]};
+  if(!state.categories.salesDiscount) state.categories.salesDiscount = ['Sales Discount'];
+  if(!state.categories.purchaseDiscount) state.categories.purchaseDiscount = ['Purchase Discount'];
+  if(!state.theme) state.theme = { preset:'Lavender', colors:null };
+  if(!state.fontChoice) state.fontChoice = { preset:'Inter', customName:'', customDataUrl:'', customFormat:'' };
+  (state.accounts.asset||[]).forEach(a=>{ if(a.subtitle===undefined) a.subtitle = a.type==='fixed' ? 'Fixed Assets' : 'Current Assets'; });
+  (state.accounts.liability||[]).forEach(a=>{ if(a.subtitle===undefined) a.subtitle = a.type==='longterm' ? 'Long-term Liabilities' : 'Current Liabilities'; });
+  (state.accounts.equity||[]).forEach(a=>{ if(a.subtitle===undefined) a.subtitle = 'Capital & Reserves'; });
+}
 function render(){
+  ensureNewFieldDefaults();
   document.getElementById('bizName').textContent = state.businessName;
   const main = document.getElementById('main');
   main.innerHTML = '';
@@ -1779,7 +1811,7 @@ function renderGeneralEntryTab(main){
           </select>
         </div>
         <div id="splitTotalField" style="display:none;"><label>Total Amount (${state.currency})</label><input type="number" step="any" min="0.01" id="splitTotalAmount" placeholder="e.g. total EMI"></div>
-        <div class="field-note">Tip: a transfer from Bank/Cash to Owner's Capital records a drawing; from Owner's Capital to Bank/Cash records a capital top-up. For a loan (Liability account), it's the opposite way round: a transfer from Bank/Cash to the loan account records an EMI's principal / a repayment — the loan balance goes down; from the loan account to Bank/Cash records fresh loan proceeds received — the loan balance goes up. You can also pick an Income title as "Transfer from" (records it as income into the Asset account on the other side) or an Expense title as "Transfer to" (records it as an expense paid from the Asset account on the other side) — those are logged as a normal Income/Expense entry, not a transfer. Liability and Equity accounts can only be used for a plain transfer, paired with another real account.</div>
+        <div class="field-note">How Transfer/Contra directions work ${infoIcon(`A transfer from Bank/Cash to Owner's Capital records a drawing; from Owner's Capital to Bank/Cash records a capital top-up. For a loan (Liability account), it's the opposite way round: a transfer from Bank/Cash to the loan account records an EMI's principal / a repayment — the loan balance goes down; from the loan account to Bank/Cash records fresh loan proceeds received — the loan balance goes up. You can also pick an Income title as "Transfer from" (records it as income into the Asset account on the other side) or an Expense title as "Transfer to" (records it as an expense paid from the Asset account on the other side) — those are logged as a normal Income/Expense entry, not a transfer. Liability and Equity accounts can only be used for a plain transfer, paired with another real account.`)}</div>
         <div id="splitLinesArea" style="display:none; margin-top:6px; grid-column:1/-1;">
           <label style="margin-bottom:6px;">Split into</label>
           <table class="line-tbl">
@@ -2175,14 +2207,17 @@ function renderGstTxTab(main, kind, title, subtitle, catGroup){
             </select>
           </div>` : ''}
         </div>
-        ${kind==='sale' ? `<div class="field-note" id="channelNote">Local GST/Cash invoices are numbered automatically in their own sequence. For Marketplace, type in the order/invoice number Amazon or Flipkart already assigned — it won't touch your local numbering.</div>` : ''}
-        ${kind==='purchase' ? `<div class="field-note">Cash bills carry no GST — item lines lock to 0% automatically when this is set to Cash.</div>` : ''}
-        ${kind==='sale' ? `<div class="field-note">For marketplace orders (Amazon, Flipkart, etc.), set this to the buyer's delivery state (shown on the order) — it decides CGST+SGST vs IGST, and lets you pull a state-wise sales summary below for GSTR-1 filing.</div>` : ''}
-        ${kind==='sale' ? `<div class="field-note">Payment mode isn't asked at entry time — the sale is tracked as pending until you mark it received (from the history table below), then you'll choose Cash or Bank.</div>` : ''}
-        ${kind==='purchase' ? `<div class="field-note">Payment mode isn't asked at entry time — the purchase is tracked as pending (owed to the vendor) until you mark it paid (from the history table below), then you'll choose Cash or Bank.</div>` : ''}
+        <div class="row" style="gap:8px; align-items:center; margin-top:4px;">
+          <span class="muted" style="font-size:11px;">Notes:</span>
+          ${kind==='sale' ? infoIcon('Local GST/Cash invoices are numbered automatically in their own sequence. For Marketplace, type in the order/invoice number Amazon or Flipkart already assigned — it won\'t touch your local numbering.') : ''}
+          ${kind==='purchase' ? infoIcon('Cash bills carry no GST — item lines lock to 0% automatically when this is set to Cash.') : ''}
+          ${kind==='sale' ? infoIcon('For marketplace orders (Amazon, Flipkart, etc.), set this to the buyer\'s delivery state (shown on the order) — it decides CGST+SGST vs IGST, and lets you pull a state-wise sales summary below for GSTR-1 filing.') : ''}
+          ${kind==='sale' ? infoIcon('Payment mode isn\'t asked at entry time — the sale is tracked as pending until you mark it received (from the history table below), then you\'ll choose Cash or Bank.') : ''}
+          ${kind==='purchase' ? infoIcon('Payment mode isn\'t asked at entry time — the purchase is tracked as pending (owed to the vendor) until you mark it paid (from the history table below), then you\'ll choose Cash or Bank.') : ''}
+        </div>
 
         <div style="margin-top:16px;">
-          <label style="margin-bottom:6px;">Items ${maxItems!==Infinity?`<span class="muted" style="text-transform:none;font-weight:400;">(max ${maxItems} per ${kind==='sale'?'invoice':'bill'})</span>`:''}</label>
+          <label style="margin-bottom:6px;">Items ${maxItems!==Infinity?`<span class="muted" style="text-transform:none;font-weight:400;">(max ${maxItems} per ${kind==='sale'?'invoice':'bill'})</span>`:''} ${infoIcon(`Items linked to inventory adjust stock automatically ${kind==='sale'?'down':'up'} by the quantity entered.${maxItems!==Infinity?` Need more than ${maxItems} items? Save this one and start a new ${kind==='sale'?'invoice':'bill'} for the rest.`:''}`)}</label>
           <table class="line-tbl">
             <thead><tr><th></th><th>Item (optional)</th><th>Description</th><th class="num">Qty</th><th class="num">Rate</th><th class="num">Amount</th><th class="num" id="gstColHead">GST %</th><th></th></tr></thead>
             <tbody id="linesBody">${lineRowHtml()}</tbody>
@@ -2193,15 +2228,12 @@ function renderGstTxTab(main, kind, title, subtitle, catGroup){
           </div>
         </div>
 
-        ${kind==='purchase' ? `<div class="inline" style="margin-top:4px;"><div><label>Round off (${state.currency})</label><input name="roundOff" id="roundOffInput" type="number" step="any" value="0"></div></div>
-        <div class="field-note">Adjust the total up or down by a small amount so it matches the vendor's bill exactly (e.g. if their bill total is already rounded). Leave 0 if not needed.</div>` : ''}
-        ${kind==='sale' ? `<div class="inline" style="margin-top:4px;"><div><label>Round off (${state.currency})</label><input name="roundOff" id="roundOffInput" type="number" step="any" value="0"></div></div>
-        <div class="field-note">Adjust the total up or down by a small amount — it flows into the invoice total, the Sales Register, and outstanding balance. Leave 0 if not needed.</div>` : ''}
+        ${kind==='purchase' ? `<div class="inline" style="margin-top:4px;"><div><label>Round off (${state.currency}) ${infoIcon('Adjust the total up or down by a small amount so it matches the vendor\'s bill exactly (e.g. if their bill total is already rounded). Leave 0 if not needed.')}</label><input name="roundOff" id="roundOffInput" type="number" step="any" value="0"></div></div>` : ''}
+        ${kind==='sale' ? `<div class="inline" style="margin-top:4px;"><div><label>Round off (${state.currency}) ${infoIcon('Adjust the total up or down by a small amount — it flows into the invoice total, the Sales Register, and outstanding balance. Leave 0 if not needed.')}</label><input name="roundOff" id="roundOffInput" type="number" step="any" value="0"></div></div>` : ''}
         <div class="row" id="gstPreview" style="margin-top:12px; justify-content:flex-end;"></div>
         <div class="field-note" id="supplyTypeNote" style="margin-top:4px;"></div>
         <div class="row" style="margin-top:12px;"><button class="btn primary" type="submit" id="txSubmitBtn">Save ${kind==='sale'?'invoice':'bill'}</button><button class="btn ghost" type="button" id="cancelEditBtn" style="display:none;">Cancel edit</button></div>
       </form>
-      <div class="field-note">Items linked to inventory adjust stock automatically ${kind==='sale'?'down':'up'} by the quantity entered. ${maxItems!==Infinity?`Need more than ${maxItems} items? Save this one and start a new invoice for the rest.`:''}</div>
     </div>
 
     <div class="panel">
