@@ -2144,13 +2144,20 @@ function renderGstTxTab(main, kind, title, subtitle, catGroup){
   let editingId = null;
 
   let lineRowId = 0;
+  function itemVariantLabel(i){
+    return [i.brand, i.color, i.gsm?`${i.gsm} GSM`:'', i.size].filter(Boolean).join(', ');
+  }
   function lineRowHtml(){
     lineRowId++;
     return `<tr data-line="${lineRowId}">
       <td class="linenum">${lineRowId}</td>
       <td><select class="lineItem">
         <option value="">— manual / service —</option>
-        ${invItems.map(i=>`<option value="${i.id}" data-price="${kind==='sale'?(i.price||i.cost):i.cost}" data-name="${i.name}" data-gst="${i.gstRate!=null?i.gstRate:18}">${i.name} (${fmt(i.qty)} ${i.unit} on hand)</option>`).join('')}
+        ${invItems.map(i=>{
+          const variant = itemVariantLabel(i);
+          const dispName = variant ? `${i.name} (${variant})` : i.name;
+          return `<option value="${i.id}" data-price="${kind==='sale'?(i.price||i.cost):i.cost}" data-name="${dispName}" data-gst="${i.gstRate!=null?i.gstRate:18}">${dispName} — ${fmt(i.qty)} ${i.unit} on hand${i.type?', '+i.type:''}</option>`;
+        }).join('')}
       </select></td>
       <td><input class="lineDesc" placeholder="Description"></td>
       <td class="lineqty"><input class="lineQty" type="number" step="any" value="1"></td>
