@@ -73,15 +73,19 @@
   /* Horizontal "T-account" layout for Trading Account / P&L / Balance Sheet — two sides shown
      side-by-side (Dr | Cr, or Assets | Capital & Liabilities). Collapses to stacked on narrow
      screens, same breakpoint as .two-col, so it stays usable on mobile. */
-  .t-format{ display:grid; grid-template-columns:1fr 1fr; gap:0 24px; align-items:start;}
-  .t-format .t-side{ min-width:0;}
+  .t-format{ display:grid; grid-template-columns:1fr 1fr; gap:0 24px; align-items:stretch;}
+  .t-format .t-side{ min-width:0; display:flex; flex-direction:column;}
   .t-format .t-side.t-right{ border-left:1px solid var(--rule); padding-left:24px;}
   @media (max-width:920px){ .t-format{ grid-template-columns:1fr; gap:20px 0;} .t-format .t-side.t-right{ border-left:none; padding-left:0; border-top:1px solid var(--rule); padding-top:16px;} }
   .t-format table{ width:100%; border-collapse:collapse; font-size:13px;}
   .t-format thead th{ text-align:left; font-size:10.5px; text-transform:uppercase; letter-spacing:.5px; color:var(--ink-soft); padding:4px 6px; font-weight:600; border-bottom:1px solid var(--rule);}
   .t-format thead th.num{ text-align:right;}
   .t-format tbody td{ padding:6px; border-bottom:1px dashed var(--rule);}
-  .t-format tfoot td{ padding:7px 6px; border-top:2px solid var(--ink); font-weight:700;}
+  /* Both sides of a Dr/Cr or Assets/Liabilities layout now stretch to equal height (align-items:stretch
+     above), and each .t-side is a flex column — so the Total row, pushed down with margin-top:auto, always
+     lands on the exact same line on both sides regardless of how many rows either side actually has. */
+  .t-format .t-side-total{ margin-top:auto; display:flex; justify-content:space-between; gap:10px; padding:7px 6px 0; border-top:2px solid var(--ink); font-weight:700;}
+  .t-format .t-side.statement > .line.total{ margin-top:auto;}
 
   table{ width:100%; border-collapse:collapse; font-size:13px;}
   thead th{ text-align:left; font-size:10.5px; text-transform:uppercase; letter-spacing:.6px; color:var(--ink-soft); border-bottom:1px solid var(--rule); padding:7px 8px; font-weight:600;}
@@ -2211,7 +2215,7 @@ function renderGstTxTab(main, kind, title, subtitle, catGroup){
             </select>
           </div>` : ''}
           <div><label>${kind==='sale'?'Invoice':'Bill'} No.</label>
-            ${kind==='sale' ? `<input name="invoiceNo" id="invoiceNoInput" placeholder="e.g. INV-0001"><div class="field-note" id="invoiceNoNote" style="margin:2px 0 0;"></div>` : `<input name="invoiceNo" id="invoiceNoInput" placeholder="e.g. BILL-0001">`}
+            <input name="invoiceNo" id="invoiceNoInput" placeholder="e.g. ${kind==='sale'?'INV-0001':'BILL-0001'}">
           </div>
           <div><label>Title / Category</label>
             <select name="category" id="catSelect" required>
@@ -2235,6 +2239,7 @@ function renderGstTxTab(main, kind, title, subtitle, catGroup){
             </select>
           </div>` : ''}
         </div>
+        ${kind==='sale' ? `<div class="field-note" id="invoiceNoNote" style="margin:4px 0 0;"></div>` : ''}
         <div class="row" style="gap:8px; align-items:center; margin-top:4px;">
           <span class="muted" style="font-size:11px;">Notes:</span>
           ${kind==='sale' ? infoIcon('Local GST/Cash invoices are numbered automatically in their own sequence. For Marketplace, type in the order/invoice number Amazon or Flipkart already assigned — it won\'t touch your local numbering.') : ''}
@@ -3523,8 +3528,8 @@ function renderTAccountSide(side, title, rows, totalLabel, totalValue, totalColo
       <tbody>
         ${rows.length ? rows.map(r=>`<tr><td>${r.label}</td><td class="num">${money(r.value)}</td></tr>`).join('') : `<tr><td class="muted">Nothing this period</td><td></td></tr>`}
       </tbody>
-      <tfoot><tr><td>${totalLabel}</td><td class="num" style="${totalColor?`color:${totalColor};`:''}">${money(totalValue)}</td></tr></tfoot>
     </table>
+    <div class="t-side-total"><span>${totalLabel}</span><span class="num" style="${totalColor?`color:${totalColor};`:''}">${money(totalValue)}</span></div>
   </div>`;
 }
 function renderTradingAccount(range){
