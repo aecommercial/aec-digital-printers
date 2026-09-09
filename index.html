@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>AEC Digital Printers — Accounts Book</title>
+<title>Accounts</title>
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%236B84D1'/%3E%3Ctext x='32' y='44' font-family='Georgia,serif' font-size='36' font-weight='700' fill='white' text-anchor='middle'%3EA%3C/text%3E%3C/svg%3E">
 <link rel="apple-touch-icon" href="apple-touch-icon.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -225,7 +225,7 @@
 </div>
 <div class="toast" id="toast"></div>
 <div id="signinGate" style="display:none; position:fixed; inset:0; background:rgba(22,33,62,.94); z-index:500; align-items:center; justify-content:center; flex-direction:column; color:#fff; text-align:center; padding:20px;">
-  <div style="font-family:'Space Grotesk',sans-serif; font-size:22px; font-weight:700; margin-bottom:10px;">AEC Digital Printers</div>
+  <div style="font-family:'Space Grotesk',sans-serif; font-size:22px; font-weight:700; margin-bottom:10px;">Accounts</div>
   <div style="max-width:360px; margin-bottom:22px; color:#B7BEDA; font-size:14px;">Sign in with the Google account this business's data should sync to, so it stays the same on every device.</div>
   <button class="btn primary" style="padding:12px 28px;" onclick="driveSignIn()">Sign in with Google</button>
   <div id="signinNote" style="margin-top:16px; font-size:12px; color:#7C84A3; max-width:340px;"></div>
@@ -237,7 +237,7 @@
    setup guide). Everything else below works automatically once that's filled in — nothing else
    in this file needs to change for sync to work. */
 const GOOGLE_CLIENT_ID = '679517527922-qlc22rfaqp099c543gd1rfbj6ia33lhr.apps.googleusercontent.com';
-const DRIVE_FOLDER_NAME = 'AEC Digital Printers — App Data';
+const DRIVE_FOLDER_NAME = 'Accounts — App Data';
 const DRIVE_FILE_NAME = 'accounts-data.json';
 const DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive.file';
 
@@ -334,13 +334,13 @@ function applyFontChoice(){
 
 function seedState(){
   return {
-    businessName: 'AEC Digital Printers',
+    businessName: 'Your Business',
     currency: '₹',
     businessGSTIN: '',
     homeState: '',
     categories:{
-      income: ['Notebook Sales', 'Stationery Sales', 'Custom Printing Orders', 'Wrapping / Envelope Sales', 'Other Income', CREDIT_NOTE_CATEGORY],
-      expense: ['Paper & Printing Materials / COGS', 'Design Software & Tools', 'Rent', 'Salaries & Wages', 'Packaging & Shipping', 'Marketing', 'Miscellaneous Expenses', PURCHASE_RETURN_CATEGORY],
+      income: ['Sales', 'Other Income', CREDIT_NOTE_CATEGORY],
+      expense: ['Purchases / COGS', 'Rent', 'Salaries & Wages', 'Miscellaneous Expenses', PURCHASE_RETURN_CATEGORY],
       salesDiscount: ['Sales Discount'],
       purchaseDiscount: ['Purchase Discount']
     },
@@ -350,17 +350,17 @@ function seedState(){
       equity: [ {name:"Owner's Capital", opening:0, subtitle:'Capital & Reserves'} ]
     },
     invoiceSettings:{
-      businessLegalName: 'A E Commercial',
-      tagline: 'Digital printing & stationery',
-      gstin: '27AZEPB1703A1ZB',
-      pan: 'AZEPB1703A',
-      address: 'Mufaddal Upliftment, Vasind, 421601.',
-      mobile: '+919768553522',
-      email: 'aecommercial.sales@gmail.com',
-      bankName: 'HDFC Bank',
-      accountHolder: 'A E Commercial',
-      accountNo: '50200071259176 (Current Account)',
-      ifsc: 'HDFC0003552',
+      businessLegalName: 'Your Business Name',
+      tagline: '',
+      gstin: '',
+      pan: '',
+      address: '',
+      mobile: '',
+      email: '',
+      bankName: '',
+      accountHolder: '',
+      accountNo: '',
+      ifsc: '',
       nextInvoiceNo: 1,
       invoicePrefix: 'INV-',
       lastInvoiceFY: null,
@@ -1860,7 +1860,7 @@ function renderGeneralEntryTab(main){
       <h2>Journal entry history <span class="tag">${rows.length} entries · this month +${money(monthIn)} / −${money(monthOut)}${monthContra?` / ⇄${money(monthContra)} transferred`:''}</span></h2>
       <table>
         <thead><tr><th>Date</th><th>Type</th><th>Title</th><th>Description</th><th>Account</th><th class="num">Amount</th><th></th></tr></thead>
-        <tbody>${rows.length ? rows.map(t=>{
+        <tbody id="journalHistoryBody">${rows.length ? rows.map(t=>{
           const splitBadge = t.splitGroupId ? ` <span class="pill" style="background:var(--amber-soft);color:var(--amber);font-size:10px;">⚡ Split</span>` : '';
           if(t.kind==='contra'){
             return `<tr><td class="muted">${dispDate(t.date)}</td><td><span class="pill" style="background:var(--accent-soft,#eef); color:var(--accent,#446);">⇄ Transfer</span>${splitBadge}</td><td>Fund Transfer</td><td>${t.description||'<span class="muted">—</span>'}</td><td class="muted">${t.fromAccount} → ${t.toAccount}</td>
@@ -2147,7 +2147,7 @@ function renderGeneralEntryTab(main){
     document.getElementById('cancelEditBtn').style.display = 'none';
   });
 
-  main.querySelector('tbody').addEventListener('click', e=>{
+  document.getElementById('journalHistoryBody').addEventListener('click', e=>{
     const editBtn = e.target.closest('[data-edit]');
     if(editBtn){ startEdit(editBtn.dataset.edit); return; }
     const btn = e.target.closest('[data-del]'); if(!btn) return;
