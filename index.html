@@ -170,6 +170,7 @@
 
   .inv-modal{ display:none; position:fixed; inset:0; background:rgba(22,33,62,.6); z-index:200; align-items:flex-start; justify-content:center; overflow:auto; padding:26px 16px;}
   @page { size: A4; margin: 0; }
+  @page label { size: 4in 6in; margin: 0; }
   .inv-actions{ position:sticky; top:0; display:flex; justify-content:flex-end; gap:10px; margin-bottom:12px; width:210mm; max-width:100%;}
   .inv-sheet{ background:#F7ECE4; color:#000; width:210mm; max-width:100%; min-height:297mm; padding:14mm; box-shadow:var(--shadow); font-family:Calibri,Arial,sans-serif; -webkit-print-color-adjust:exact; print-color-adjust:exact;}
   .inv-sheet table{ border-collapse:collapse;}
@@ -178,6 +179,8 @@
   .inv-sheet--break{ break-before:page; page-break-before:always;}
   .inv-spacer{ flex:1; min-height:0;}
   .inv-items-tbl tr{ break-inside:avoid; page-break-inside:avoid;}
+  .label-actions{ position:sticky; top:0; display:flex; justify-content:flex-end; gap:10px; margin-bottom:12px; width:4in; max-width:100%;}
+  .label-sheet{ page:label; background:#fff; color:#000; width:4in; height:6in; max-width:100%; padding:0.22in; box-sizing:border-box; box-shadow:var(--shadow); font-family:Calibri,Arial,sans-serif; -webkit-print-color-adjust:exact; print-color-adjust:exact; display:flex; flex-direction:column;}
   .party-modal{ display:none; position:fixed; inset:0; background:rgba(22,33,62,.6); z-index:220; align-items:center; justify-content:center; padding:16px;}
   .party-card{ background:#fff; color:var(--ink); width:420px; max-width:100%; border-radius:12px; padding:20px 22px; box-shadow:var(--shadow);}
   .party-card h3{ font-family:'Space Grotesk',sans-serif; font-size:16px; margin:0 0 14px;}
@@ -198,8 +201,10 @@
     body > *:not(.inv-modal){ display:none !important;}
     .inv-modal{ display:block; position:static; background:#fff; padding:0;}
     .inv-actions{ display:none;}
+    .label-actions{ display:none;}
     .inv-pages{ display:block;}
     .inv-sheet{ box-shadow:none; margin:0;}
+    .label-sheet{ box-shadow:none; margin:0;}
   }
 </style>
 </head>
@@ -1136,6 +1141,59 @@ function openInvoice(txId){
   modal.style.display = 'flex';
   document.getElementById('invCloseBtn').addEventListener('click', ()=>{ modal.style.display='none'; });
   document.getElementById('invPrintBtn').addEventListener('click', ()=> window.print());
+}
+
+/* ============================= SHIPPING LABEL (4x6in, printable) =============================
+   Sales-only (no purchase equivalent — this is for outbound dispatch, not goods coming in). Reuses the
+   same party/business fields already captured on the invoice — Ship To pulls from the sale's own
+   description/address/contactPerson/contactNumber, From pulls from Settings → Invoice details — so there's
+   nothing new to type in. Font sizes step down automatically as the Ship To block's content gets longer,
+   so a short name+address prints large and a long one still fits the fixed 4x6in sheet without overflowing. */
+function shippingLabelSizeTier(totalChars){
+  if(totalChars<=50) return { name:24, detail:16 };
+  if(totalChars<=90) return { name:20, detail:14 };
+  if(totalChars<=130) return { name:17, detail:12.5 };
+  return { name:15, detail:11 };
+}
+function openShippingLabel(txId){
+  const t = state.transactions.find(x=>x.id==txId);
+  if(!t) return;
+  const inv = state.invoiceSettings;
+  const shipName = t.description || '—';
+  const contactBits = [t.contactPerson ? 'Attn: '+t.contactPerson : '', t.contactNumber || ''].filter(Boolean);
+  const totalChars = shipName.length + (t.address||'').length + contactBits.join(' ').length;
+  const size = shippingLabelSizeTier(totalChars);
+
+  const html = `
+    <div class="label-actions">
+      <button class="btn ghost" id="labelCloseBtn">✕ Close</button>
+      <button class="btn primary" id="labelPrintBtn">🖨 Print / Save as PDF</button>
+    </div>
+    <div class="label-sheet">
+      <div style="border-bottom:0.75px solid #ccc; padding-bottom:8px; margin-bottom:14px;">
+        <div style="font-size:10px; color:#8a5a3a; text-transform:uppercase; letter-spacing:.05em; margin-bottom:2px;">From</div>
+        <div style="font-size:13px; font-weight:700;">${inv.businessLegalName||''}</div>
+        ${inv.address ? `<div style="font-size:11px; color:#444; margin-top:2px; line-height:1.4;">${inv.address}</div>` : ''}
+        ${inv.mobile ? `<div style="font-size:11px; color:#444; margin-top:1px;">${inv.mobile}</div>` : ''}
+      </div>
+      <div style="flex:1; display:flex; flex-direction:column; justify-content:center;">
+        <div style="font-size:12px; color:#8a5a3a; text-transform:uppercase; letter-spacing:.05em; margin-bottom:8px;">Ship To</div>
+        <div style="font-size:${size.name}px; font-weight:700; line-height:1.3; margin-bottom:8px;">${shipName}</div>
+        ${contactBits.map(c=>`<div style="font-size:${size.detail}px; color:#333; margin-bottom:5px;">${c}</div>`).join('')}
+        ${t.address ? `<div style="font-size:${size.detail}px; color:#333; line-height:1.5;">${t.address}</div>` : ''}
+      </div>
+      <div style="border-top:0.75px solid #ccc; padding-top:8px; display:flex; justify-content:space-between;">
+        <span style="font-size:10px; color:#888;">Invoice</span>
+        <span style="font-size:10px; color:#444;">${t.invoiceNo||'—'} · ${dispDate(t.date)}</span>
+      </div>
+    </div>
+  `;
+  let modal = document.getElementById('invoiceModal');
+  if(!modal){ modal = document.createElement('div'); modal.id='invoiceModal'; modal.className='inv-modal'; document.body.appendChild(modal); }
+  modal.innerHTML = html;
+  modal.style.display = 'flex';
+  document.getElementById('labelCloseBtn').addEventListener('click', ()=>{ modal.style.display='none'; });
+  document.getElementById('labelPrintBtn').addEventListener('click', ()=> window.print());
 }
 
 /* ============================= CLIENT / VENDOR QUICK ADD ============================= */
@@ -2299,6 +2357,7 @@ function renderGstTxTab(main, kind, title, subtitle, catGroup){
           const canReturn = !isReturnDoc && (kind==='sale' || kind==='purchase');
           const menuItems = [
             !isReturnDoc && kind==='sale' ? `<button data-inv="${t.id}">🖨 Invoice</button>` : '',
+            !isReturnDoc && kind==='sale' ? `<button data-label="${t.id}">🏷 Label</button>` : '',
             isReturnDoc && t.docType==='credit-note' ? `<button data-inv="${t.id}">🖨 Credit Note</button>` : '',
             canReturn ? `<button data-return="${t.id}" data-returnkind="${kind}">↩ ${kind==='sale'?'Sales':'Purchase'} return</button>` : '',
             btnLabel ? `<button data-mark="${t.id}">💰 ${btnLabel}</button>` : '',
@@ -2573,35 +2632,99 @@ function renderGstTxTab(main, kind, title, subtitle, catGroup){
       if(alreadySettled>0.004 && round2(newTotal-alreadySettled) < -0.004){
         if(!confirm(`This ${title.toLowerCase().replace(/s$/,'')} already has ${money(alreadySettled)} recorded as paid/discounted, more than the new total of ${money(newTotal)}. Continue anyway?`)) return;
       }
-      // reverse the OLD inventory effect, then reapply the NEW one
+
+      // ============ PROPOSE: simulate the full inventory effect against a scratch copy — the
+      // real inventory items and state.inventoryMovements are NOT touched anywhere in this block.
+      // Every quantity/cost the edit would produce is computed here first, against `proposed`, so every
+      // validation (including the negative-stock confirmation below) happens before any real mutation. ============
       const oldLines = (existing.items && existing.items.length) ? existing.items : (existing.itemId ? [{itemId:existing.itemId, qty:existing.qty, rate:existing.amount && existing.qty ? existing.amount/existing.qty : 0}] : []);
+      const affectedItemIds = new Set();
+      oldLines.forEach(ln=>{ if(ln.itemId) affectedItemIds.add(ln.itemId); });
+      rowsData.forEach(l=>{ if(l.itemId) affectedItemIds.add(l.itemId); });
+      const proposed = new Map(); // itemId -> {qty, cost} scratch snapshot, seeded from the real items
+      let missingItem = false;
+      affectedItemIds.forEach(id=>{
+        const item = findItem(id);
+        if(item) proposed.set(id, { qty:item.qty, cost:item.cost });
+        else missingItem = true; // an item this transaction refers to was deleted since — matches existing `if(!item) return/continue` behavior, just detected up front
+      });
+
+      // simulate reversing the OLD lines (mirrors weightedAvgReverseIn's math, applied to the scratch copy only)
       oldLines.forEach(ln=>{
         if(!ln.itemId) return;
-        const item = findItem(ln.itemId);
-        if(!item) return;
-        if(kind==='sale') item.qty += (Number(ln.qty)||0);
-        else weightedAvgReverseIn(item, ln.qty, ln.rate);
+        const p = proposed.get(ln.itemId); if(!p) return;
+        if(kind==='sale'){ p.qty = p.qty + (Number(ln.qty)||0); }
+        else {
+          const qty = Number(ln.qty)||0, rate = Number(ln.rate)||0;
+          const oldQty = p.qty, oldCost = p.cost, newQty = oldQty - qty;
+          if(newQty > 0.0000001) p.cost = round2(((oldQty*oldCost) - (qty*rate)) / newQty);
+          p.qty = newQty;
+        }
       });
-      state.inventoryMovements = state.inventoryMovements.filter(m=>m.txId!=editingId);
-      for(const l of rowsData){
-        if(!l.itemId) continue;
-        const item = findItem(l.itemId);
-        if(!item) continue;
-        if(kind==='sale' && item.qty - l.qty < 0){ if(!confirm(`This will take "${item.name}" below zero stock. Continue?`)) return; }
-        if(kind==='sale') item.qty -= l.qty; else weightedAvgIn(item, l.qty, l.rate);
-        state.inventoryMovements.push({ id: uid(), date, itemId: item.id, type: kind==='sale'?'out':'in', qty: l.qty, rate: kind==='purchase'?l.rate:undefined, note: `Auto: ${title.replace(/s$/,'')} ${f.get('invoiceNo')||''}`.trim(), txId: editingId });
+      // simulate applying the NEW lines (mirrors weightedAvgIn's math), collecting every item that would
+      // go negative — ALL of them, across every line, not just the first one hit — so the confirmation
+      // below can show the complete picture in one dialog instead of interrupting mid-loop.
+      const negativeStockItems = [];
+      rowsData.forEach(l=>{
+        if(!l.itemId) return;
+        const p = proposed.get(l.itemId); if(!p) return;
+        if(kind==='sale'){
+          const resultingQty = round2(p.qty - l.qty);
+          if(resultingQty < -0.0000001){
+            const item = findItem(l.itemId);
+            negativeStockItems.push({ name: item ? item.name : l.name, resultingQty });
+          }
+          p.qty = resultingQty;
+        } else {
+          const qty = Number(l.qty)||0, rate = Number(l.rate), effRate = isFinite(rate) ? rate : p.cost;
+          const oldQty = p.qty, oldCost = p.cost, newQty = oldQty + qty;
+          if(newQty > 0.0000001) p.cost = round2(((oldQty*oldCost) + (qty*effRate)) / newQty);
+          p.qty = newQty;
+        }
+      });
+
+      // ============ VALIDATE / CONFIRM — still no real mutation. If the user cancels here, we return
+      // immediately with the original state completely untouched: nothing above this point wrote to
+      // state.inventoryItems or state.inventoryMovements. ============
+      if(negativeStockItems.length){
+        const list = negativeStockItems.map(x=>`"${x.name}" (would end at ${fmt(x.resultingQty)})`).join(', ');
+        if(!confirm(`This edit will take ${list} below zero stock. Continue?`)) return;
       }
-      Object.assign(existing, {
-        date, category, amount,
-        description: f.get('description')||'', invoiceNo: f.get('invoiceNo')||'', gstin: (f.get('gstin')||'').toUpperCase(),
-        partyId: selectedParty ? selectedParty.id : null,
-        address: selectedParty ? (selectedParty.address||'') : '',
-        contactPerson: selectedParty ? (selectedParty.contactPerson||'') : '',
-        contactNumber: selectedParty ? (selectedParty.contactNumber||'') : '',
-        items: rowsData,
-        gstRate, supplyType, cgst, sgst, igst, buyerState: f.get('buyerState')||'', saleChannel, roundOff
-        // account/flow/kind/id intentionally left untouched — editing shouldn't disturb payment status
-      });
+
+      // ============ COMMIT — every check has passed; apply the already-computed plan for real, in one
+      // uninterrupted pass with no further confirm()/validation calls, then save exactly once. ============
+      try{
+        oldLines.forEach(ln=>{
+          if(!ln.itemId) return;
+          const item = findItem(ln.itemId);
+          if(!item) return;
+          if(kind==='sale') item.qty += (Number(ln.qty)||0);
+          else weightedAvgReverseIn(item, ln.qty, ln.rate);
+        });
+        state.inventoryMovements = state.inventoryMovements.filter(m=>m.txId!=editingId);
+        for(const l of rowsData){
+          if(!l.itemId) continue;
+          const item = findItem(l.itemId);
+          if(!item) continue;
+          if(kind==='sale') item.qty -= l.qty; else weightedAvgIn(item, l.qty, l.rate);
+          state.inventoryMovements.push({ id: uid(), date, itemId: item.id, type: kind==='sale'?'out':'in', qty: l.qty, rate: kind==='purchase'?l.rate:undefined, note: `Auto: ${title.replace(/s$/,'')} ${f.get('invoiceNo')||''}`.trim(), txId: editingId });
+        }
+        Object.assign(existing, {
+          date, category, amount,
+          description: f.get('description')||'', invoiceNo: f.get('invoiceNo')||'', gstin: (f.get('gstin')||'').toUpperCase(),
+          partyId: selectedParty ? selectedParty.id : null,
+          address: selectedParty ? (selectedParty.address||'') : '',
+          contactPerson: selectedParty ? (selectedParty.contactPerson||'') : '',
+          contactNumber: selectedParty ? (selectedParty.contactNumber||'') : '',
+          items: rowsData,
+          gstRate, supplyType, cgst, sgst, igst, buyerState: f.get('buyerState')||'', saleChannel, roundOff
+          // account/flow/kind/id intentionally left untouched — editing shouldn't disturb payment status
+        });
+      } catch(err){
+        toast('Something went wrong saving this edit — please check the entry and try again.');
+        console.error('Sale/purchase edit commit failed:', err);
+        return; // do NOT save() — localStorage still reflects the pre-edit state either way, since save() is only ever reached after this try block completes cleanly
+      }
       save(); toast(`${title.replace(/s$/,'')} entry updated.`);
       editingId = null;
       render();
@@ -2610,11 +2733,37 @@ function renderGstTxTab(main, kind, title, subtitle, catGroup){
 
     const id = uid();
 
+    // Same simulate-before-commit protection as the edit path above: check every line for negative
+    // stock against a scratch snapshot first, confirm once with the complete picture, and only then
+    // apply anything for real — so cancelling never leaves an earlier line's stock reduction applied
+    // while a later line's is not.
+    {
+      const negativeStockItems = [];
+      const scratch = new Map();
+      for(const l of rowsData){
+        if(!l.itemId || kind!=='sale') continue;
+        if(!scratch.has(l.itemId)){
+          const item = findItem(l.itemId);
+          if(!item) continue;
+          scratch.set(l.itemId, item.qty);
+        }
+        const resultingQty = round2(scratch.get(l.itemId) - l.qty);
+        if(resultingQty < -0.0000001){
+          const item = findItem(l.itemId);
+          negativeStockItems.push({ name: item ? item.name : l.name, resultingQty });
+        }
+        scratch.set(l.itemId, resultingQty);
+      }
+      if(negativeStockItems.length){
+        const list = negativeStockItems.map(x=>`"${x.name}" (would end at ${fmt(x.resultingQty)})`).join(', ');
+        if(!confirm(`This will take ${list} below zero stock. Continue?`)) return;
+      }
+    }
+
     for(const l of rowsData){
       if(!l.itemId) continue;
       const item = findItem(l.itemId);
       if(!item) continue;
-      if(kind==='sale' && item.qty - l.qty < 0){ if(!confirm(`This will take "${item.name}" below zero stock. Continue?`)) return; }
       if(kind==='sale') item.qty -= l.qty; else weightedAvgIn(item, l.qty, l.rate);
       state.inventoryMovements.push({ id: uid(), date, itemId: item.id, type: kind==='sale'?'out':'in', qty: l.qty, rate: kind==='purchase'?l.rate:undefined, note: `Auto: ${title.replace(/s$/,'')} ${f.get('invoiceNo')||''}`.trim(), txId: id });
     }
@@ -2651,6 +2800,8 @@ function renderGstTxTab(main, kind, title, subtitle, catGroup){
     }
     const invBtn = e.target.closest('[data-inv]');
     if(invBtn){ openInvoice(invBtn.dataset.inv); return; }
+    const labelBtn = e.target.closest('[data-label]');
+    if(labelBtn){ openShippingLabel(labelBtn.dataset.label); return; }
     const returnBtn = e.target.closest('[data-return]');
     if(returnBtn){ openReturnModal(returnBtn.dataset.return, returnBtn.dataset.returnkind); return; }
     const markBtn = e.target.closest('[data-mark]');
