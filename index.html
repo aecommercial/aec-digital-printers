@@ -2869,7 +2869,9 @@ function renderGstTxTab(main, kind, title, subtitle, catGroup){
 
 /* ============================= INVENTORY ============================= */
 function renderInventory(main){
-  const items = [...state.inventoryItems].sort((a,b)=>a.name.localeCompare(b.name));
+  const allItems = [...state.inventoryItems].sort((a,b)=>a.name.localeCompare(b.name));
+  const items = allItems.filter(i=>(Number(i.qty)||0) > 0); // In Stock — low-stock items stay in here too, per the user's call
+  const outOfStock = allItems.filter(i=>(Number(i.qty)||0) <= 0);
   const moves = [...state.inventoryMovements].sort(byDateThenNewestFirst).slice(0,15);
   const low = lowStockItems();
   const distinctVals = (field)=> [...new Set(state.inventoryItems.map(i=>i[field]).filter(Boolean))].sort((a,b)=>a.localeCompare(b));
@@ -2881,14 +2883,22 @@ function renderInventory(main){
   const usedBytes = storageUsedBytes();
   const usedPct = Math.min(100, round2(usedBytes / ESTIMATED_STORAGE_LIMIT_BYTES * 100));
   const usedMB = (usedBytes/1024/1024).toFixed(2);
+  const itemRowHtml = (i)=>{
+    const thumb = (i.photos && i.photos.length) ? `<img src="${i.photos[0]}" data-viewphotos="${i.id}" style="width:36px;height:36px;object-fit:cover;border-radius:4px;border:1px solid #ddd;cursor:pointer;" title="${i.photos.length} photo(s) — click to view">` : '';
+    const subline = [i.type, i.brand, i.color, i.gsm?`${i.gsm} GSM`:'', i.size].filter(Boolean).join(' • ');
+    return `<tr data-item-row data-name="${(i.name||'').toLowerCase().replace(/"/g,'&quot;')}" data-type="${(i.type||'').toLowerCase().replace(/"/g,'&quot;')}"><td style="width:44px;">${thumb}</td><td>${i.name}${subline?`<div class="muted" style="font-size:10.5px;">${subline}</div>`:''}</td><td class="muted">${i.unit||'pcs'}</td>
+    <td class="num">${fmt(i.qty)}</td><td class="num">${money(i.cost)}</td><td class="num">${money(i.price||0)}</td><td class="num">${money(itemValue(i))}</td>
+    <td><button class="btn ghost small" data-edititem="${i.id}" style="margin-right:4px;">✎ Edit</button><button class="btn ghost small" data-rmitem="${i.id}">Delete</button></td></tr>`;
+  };
 
   main.innerHTML = `
     <div class="topbar"><div><h1 class="disp">Inventory</h1><div class="sub">Stock on hand, valued at cost.</div></div></div>
 
     <div class="grid cards">
       <div class="card"><div class="label">Inventory value</div><div class="value num">${money(inventoryValue())}</div><div class="foot">At cost price</div></div>
-      <div class="card"><div class="label">Items tracked</div><div class="value num">${items.length}</div><div class="foot">${inventoryUnits()} unit(s) on hand</div></div>
+      <div class="card"><div class="label">Items tracked</div><div class="value num">${allItems.length}</div><div class="foot">${inventoryUnits()} unit(s) on hand</div></div>
       <div class="card ${low.length?'amber':''}"><div class="label">Low stock</div><div class="value num">${low.length}</div><div class="foot">${low.length? 'At or below reorder level' : 'All items well stocked'}</div></div>
+      <div class="card ${outOfStock.length?'bad':''}"><div class="label">Out of stock</div><div class="value num">${outOfStock.length}</div><div class="foot">${outOfStock.length? 'Zero qty on hand' : 'Nothing out of stock'}</div></div>
       <div class="card ${usedPct>=70?'amber':''}"><div class="label">Browser storage used</div><div class="value num">${usedMB} MB</div><div class="foot">~${usedPct}% of a typical ${(ESTIMATED_STORAGE_LIMIT_BYTES/1024/1024).toFixed(0)}MB per-site limit — mostly item photos</div></div>
     </div>
 
@@ -2916,31 +2926,35 @@ function renderInventory(main){
     </div>
 
     <div class="panel">
-      <h2>Items <span class="tag">${items.length} item(s)</span></h2>
+      <h2>In stock <span class="tag">${items.length} item(s)</span></h2>
       <div class="inline" style="margin-bottom:6px;">
         <div><label>Filter by item name</label><input type="text" id="invFilterName" placeholder="Search item name…" autocomplete="off"></div>
         <div><label>Filter by type</label><select id="invFilterType"><option value="">All types</option>${typeOpts.map(t=>`<option value="${t}">${t}</option>`).join('')}</select></div>
       </div>
       <table>
         <thead><tr><th></th><th>Item</th><th>Unit</th><th class="num">Qty on hand</th><th class="num">Unit price</th><th class="num">Sale price</th><th class="num">Value</th><th></th></tr></thead>
-        <tbody id="invItemsBody">${items.length ? items.map(i=>{
-          const thumb = (i.photos && i.photos.length) ? `<img src="${i.photos[0]}" data-viewphotos="${i.id}" style="width:36px;height:36px;object-fit:cover;border-radius:4px;border:1px solid #ddd;cursor:pointer;" title="${i.photos.length} photo(s) — click to view">` : '';
-          const subline = [i.type, i.brand, i.color, i.gsm?`${i.gsm} GSM`:'', i.size].filter(Boolean).join(' • ');
-          return `<tr data-item-row data-name="${(i.name||'').toLowerCase().replace(/"/g,'&quot;')}" data-type="${(i.type||'').toLowerCase().replace(/"/g,'&quot;')}"><td style="width:44px;">${thumb}</td><td>${i.name}${subline?`<div class="muted" style="font-size:10.5px;">${subline}</div>`:''}</td><td class="muted">${i.unit||'pcs'}</td>
-          <td class="num">${fmt(i.qty)}</td><td class="num">${money(i.cost)}</td><td class="num">${money(i.price||0)}</td><td class="num">${money(itemValue(i))}</td>
-          <td><button class="btn ghost small" data-edititem="${i.id}" style="margin-right:4px;">✎ Edit</button><button class="btn ghost small" data-rmitem="${i.id}">Delete</button></td></tr>`;
-        }).join('') : `<tr><td colspan="8" class="empty">No items yet — add your first item above.</td></tr>`}
+        <tbody id="invItemsBody">${items.length ? items.map(itemRowHtml).join('') : `<tr><td colspan="8" class="empty">No items in stock — add your first item above.</td></tr>`}
         <tr data-empty-filter style="display:none;"><td colspan="8" class="empty">No items match your filter.</td></tr>
         </tbody>
       </table>
     </div>
+
+    <details class="panel report-collapse">
+      <summary><h2>Out of stock <span class="tag">${outOfStock.length} item(s)</span></h2></summary>
+      <div class="report-collapse-body">
+        ${outOfStock.length ? `<table>
+          <thead><tr><th></th><th>Item</th><th>Unit</th><th class="num">Qty on hand</th><th class="num">Unit price</th><th class="num">Sale price</th><th class="num">Value</th><th></th></tr></thead>
+          <tbody id="invOutOfStockBody">${outOfStock.map(itemRowHtml).join('')}</tbody>
+        </table>` : `<div class="empty">Nothing out of stock right now.</div>`}
+      </div>
+    </details>
 
     <div class="panel">
       <h2>Record stock movement</h2>
       <form class="inline" id="moveForm">
         <div><label>Date</label><input name="date" type="date" value="${todayISO()}" required></div>
         <div><label>Item</label>
-          <select name="itemId" required>${items.map(i=>`<option value="${i.id}">${i.name}</option>`).join('') || '<option value="">Add an item first</option>'}</select>
+          <select name="itemId" required>${allItems.map(i=>`<option value="${i.id}">${i.name}</option>`).join('') || '<option value="">Add an item first</option>'}</select>
         </div>
         <div><label>Type</label>
           <select name="type">
