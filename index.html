@@ -1198,16 +1198,31 @@ function openShippingLabel(txId){
 
 /* ============================= CLIENT / VENDOR QUICK ADD ============================= */
 function openPartyModal(kind, existingId, onSaved){
-  const label = kind==='client' ? 'Client' : 'Vendor';
-  const list = kind==='client' ? state.clients : state.vendors;
+  // When kind is omitted (the unified "Quick add" button in the merged Clients & Vendors settings
+  // group), the modal shows a Client/Vendor type selector and the user's pick decides which list the
+  // record is saved into. When kind IS supplied — editing an existing record, or adding a new
+  // client/vendor inline while creating a Sale/Purchase entry, where the context already fixes the
+  // type — the type is locked and no selector is shown. Editing never shows the selector either:
+  // switching an existing party's type after it's already been used on invoices could orphan those
+  // references.
+  const showTypeChoice = !kind && !existingId;
+  const fallbackKind = kind || 'client';
+  const list = fallbackKind==='client' ? state.clients : state.vendors;
   const existing = existingId ? list.find(p=>p.id==existingId) : null;
+  const label = fallbackKind==='client' ? 'Client' : 'Vendor';
   let modal = document.getElementById('partyModal');
   if(!modal){ modal = document.createElement('div'); modal.id='partyModal'; modal.className='party-modal'; document.body.appendChild(modal); }
   modal.innerHTML = `
     <div class="party-card">
-      <h3>${existing ? 'Edit' : 'Quick add'} ${label.toLowerCase()}</h3>
+      <h3>${existing ? 'Edit' : 'Quick add'} ${showTypeChoice ? 'client / vendor' : label.toLowerCase()}</h3>
       <div style="display:grid; gap:10px;">
-        <div><label>${label} / business name</label><input id="pmName" value="${existing?existing.name:''}" placeholder="Business or party name"></div>
+        ${showTypeChoice ? `<div><label>Type</label>
+          <select id="pmType">
+            <option value="client">Client</option>
+            <option value="vendor">Vendor</option>
+          </select>
+        </div>` : ''}
+        <div><label>Name / business name</label><input id="pmName" value="${existing?existing.name:''}" placeholder="Business or party name"></div>
         <div><label>Address</label><input id="pmAddress" value="${existing?(existing.address||''):''}" placeholder="Address"></div>
         <div><label>State</label>
           <select id="pmState">
@@ -1221,7 +1236,7 @@ function openPartyModal(kind, existingId, onSaved){
       </div>
       <div class="row">
         <button class="btn ghost" id="pmCancel">Cancel</button>
-        <button class="btn primary" id="pmSave">${existing?'Save changes':'Add '+label.toLowerCase()}</button>
+        <button class="btn primary" id="pmSave">${existing?'Save changes':'Add'}</button>
       </div>
     </div>
   `;
@@ -1230,7 +1245,10 @@ function openPartyModal(kind, existingId, onSaved){
   modal.addEventListener('click', e=>{ if(e.target===modal) modal.style.display='none'; });
   document.getElementById('pmSave').addEventListener('click', ()=>{
     const name = document.getElementById('pmName').value.trim();
-    if(!name){ toast(`Enter a ${label.toLowerCase()} name.`); return; }
+    if(!name){ toast('Enter a name.'); return; }
+    const resolvedKind = showTypeChoice ? document.getElementById('pmType').value : fallbackKind;
+    const resolvedLabel = resolvedKind==='client' ? 'Client' : 'Vendor';
+    const resolvedList = resolvedKind==='client' ? state.clients : state.vendors;
     const rec = {
       id: existing ? existing.id : uid(),
       name,
@@ -1241,9 +1259,9 @@ function openPartyModal(kind, existingId, onSaved){
       gstin: document.getElementById('pmGstin').value.trim().toUpperCase()
     };
     if(existing){ Object.assign(existing, rec); }
-    else { list.push(rec); }
-    save(); modal.style.display='none'; toast(`${label} ${existing?'updated':'added'}.`);
-    if(onSaved) onSaved(rec.id);
+    else { resolvedList.push(rec); }
+    save(); modal.style.display='none'; toast(`${resolvedLabel} ${existing?'updated':'added'}.`);
+    if(onSaved) onSaved(rec.id, resolvedKind);
   });
 }
 
@@ -1656,6 +1674,14 @@ function ensureNewFieldDefaults(){
   if(!state.categories) state.categories = {income:[], expense:[]};
   if(!state.categories.salesDiscount) state.categories.salesDiscount = ['Sales Discount'];
   if(!state.categories.purchaseDiscount) state.categories.purchaseDiscount = ['Purchase Discount'];
+  /* Category subtitles — a parallel lookup (category name -> subtitle), kept separate from
+     state.categories.income/expense (which stay plain string arrays, unchanged, since dozens of
+     places across the app read/compare those as strings). Mirrors how Balance Sheet accounts already
+     carry a `subtitle` field, but here it's a lookup table because categories are strings, not objects.
+     A category with no entry here groups under "Other" on the P&L, same convention as Balance Sheet. */
+  if(!state.categorySubtitles) state.categorySubtitles = {income:{}, expense:{}};
+  if(!state.categorySubtitles.income) state.categorySubtitles.income = {};
+  if(!state.categorySubtitles.expense) state.categorySubtitles.expense = {};
   if(!state.theme) state.theme = { preset:'Lavender', colors:null };
   if(!state.fontChoice) state.fontChoice = { preset:'Inter', customName:'', customDataUrl:'', customFormat:'' };
   (state.accounts.asset||[]).forEach(a=>{ if(a.subtitle===undefined) a.subtitle = a.type==='fixed' ? 'Fixed Assets' : 'Current Assets'; });
@@ -3686,22 +3712,65 @@ function renderStateWiseSales(){
    Particulars/Amount table with a bold total row. Shared by Trading Account, P&L, and (indirectly,
    via its own markup) the Balance Sheet below. */
 function renderTAccountSide(side, title, rows, totalLabel, totalValue, totalColor){
+  const rowHtml = (r)=>{
+    if(r.isHeader) return `<tr><td colspan="2" style="font-weight:700; font-size:11.5px; text-transform:uppercase; letter-spacing:.5px; color:var(--ink-soft); padding-top:10px;">${r.label}</td></tr>`;
+    const cellStyle = r.isSubtotal ? 'font-weight:700; border-top:1px solid var(--rule);' : (r.indent ? 'padding-left:20px;' : '');
+    return `<tr><td style="${cellStyle}">${r.label}</td><td class="num" style="${cellStyle}">${money(r.value)}</td></tr>`;
+  };
   return `<div class="t-side t-${side}">
     <div class="section-title" style="text-align:left;">${title}</div>
     <table>
       <thead><tr><th>Particulars</th><th class="num">Amount</th></tr></thead>
       <tbody>
-        ${rows.length ? rows.map(r=>`<tr><td>${r.label}</td><td class="num">${money(r.value)}</td></tr>`).join('') : `<tr><td class="muted">Nothing this period</td><td></td></tr>`}
+        ${rows.length ? rows.map(rowHtml).join('') : `<tr><td class="muted">Nothing this period</td><td></td></tr>`}
       </tbody>
     </table>
     <div class="t-side-total"><span>${totalLabel}</span><span class="num" style="${totalColor?`color:${totalColor};`:''}">${money(totalValue)}</span></div>
   </div>`;
 }
+/* Groups [category, amount] entries by their user-set subtitle (state.categorySubtitles[group]),
+   in first-appearance order — same convention as the Balance Sheet's groupBySubtitle(): an
+   ungrouped category falls under "Other". Used by the P&L to cluster categories the same way the
+   Balance Sheet already clusters accounts. */
+function groupCatsBySubtitle(entries, group){
+  const order = []; const groups = {};
+  const subtitles = state.categorySubtitles[group] || {};
+  entries.forEach(([c,v])=>{
+    const key = (subtitles[c]||'').trim() || 'Other';
+    if(!groups[key]){ groups[key]=[]; order.push(key); }
+    groups[key].push([c,v]);
+  });
+  return order.map(title=>({title, entries:groups[title]}));
+}
+/* "Direct Expenses" is the one category subtitle that isn't purely cosmetic: an expense category
+   tagged with it (case-insensitively, exact match) moves that category's entries from the P&L into
+   the Trading Account, where they reduce Gross Profit instead of just Net Profit — the standard
+   accounting treatment for costs like Wages or Freight Inward that are part of getting goods ready
+   to sell. Every other subtitle (Administrative, Selling & Distribution, etc.) only affects how
+   categories are grouped for display, same as Balance Sheet subtitles. This split doesn't change
+   totalExpense()/netProfit() above — every expense-kind transaction still lands in exactly one of
+   the two buckets (direct or other), so the combined total, and hence Net Profit, is unaffected;
+   only where it's shown (and therefore Gross Profit) moves. */
+const DIRECT_EXPENSE_SUBTITLE = 'Direct Expenses';
+function isDirectExpenseCategory(name){
+  const sub = state.categorySubtitles.expense[name];
+  return !!(sub && sub.trim().toLowerCase() === DIRECT_EXPENSE_SUBTITLE.toLowerCase());
+}
+function directExpensesByCat(range){
+  const f = periodFilter(range);
+  const map = {};
+  state.transactions.filter(t=>t.kind==='expense' && f(t.date) && isDirectExpenseCategory(t.category)).forEach(t=>{
+    map[t.category] = (map[t.category]||0) + t.amount;
+  });
+  return map;
+}
 function renderTradingAccount(range){
   const opening = openingStockValue(range);
   const purchases = purchasesTotal(range);
   const closing = closingStockValue();
-  const cogs = opening + purchases - closing;
+  const directExp = Object.entries(directExpensesByCat(range)).filter(([,v])=>isNonZero(v));
+  const directExpTotal = round2(directExp.reduce((s,[,v])=>s+v,0));
+  const cogs = opening + purchases - closing + directExpTotal;
   const sales = salesTotal(range);
   const gross = sales - cogs;
   const closingIsAsOfToday = periodEndDate(range) === todayISO();
@@ -3710,29 +3779,55 @@ function renderTradingAccount(range){
     {label:'To Opening Stock', value:opening},
     {label:'To Purchases', value:purchases}
   ];
+  if(directExp.length){
+    drRows.push({label:'Direct Expenses', isHeader:true});
+    directExp.forEach(([c,v])=> drRows.push({label:`To ${c}`, value:v, indent:true}));
+    drRows.push({label:'Total Direct Expenses', value:directExpTotal, isSubtotal:true});
+  }
   const crRows = [
     {label:'By Sales', value:sales},
     {label:`By Closing Stock${closingIsAsOfToday?'':' (as of today)'}`, value:closing}
   ];
   if(gross>=0) drRows.push({label:'To Gross Profit c/d', value:gross});
   else crRows.push({label:'By Gross Loss c/d', value:-gross});
-  const drTotal = round2(drRows.reduce((s,r)=>s+r.value,0));
-  const crTotal = round2(crRows.reduce((s,r)=>s+r.value,0));
+  // Computed from the underlying figures, not by re-summing drRows/crRows — same reason as the P&L
+  // below: subtotal rows sit alongside their own line items and would otherwise be double-counted.
+  const drTotal = round2(opening + purchases + directExpTotal + (gross>=0?gross:0));
+  const crTotal = round2(sales + closing + (gross<0?-gross:0));
 
   return `<div class="t-format">
     ${renderTAccountSide('left','Dr', drRows, 'Total', drTotal)}
     ${renderTAccountSide('right','Cr', crRows, 'Total', crTotal)}
   </div>
-  <div class="field-note">Opening Stock is reconstructed from your stock movement history as it stood at the start of the period; Closing Stock is always your current stock on hand as of today${closingIsAsOfToday?'':`, since ${dispDate(periodEndDate(range))} is in the past and the app doesn't keep a day-by-day stock ledger`}. Purchases and Sales are the invoice totals recorded in this period (Purchases/Sales tabs). ${gross>=0?'Gross Profit':'Gross Loss'} carries down to the Profit &amp; Loss account, which also includes any non-trading income/expenses.</div>`;
+  <div class="field-note">Opening Stock is reconstructed from your stock movement history as it stood at the start of the period; Closing Stock is always your current stock on hand as of today${closingIsAsOfToday?'':`, since ${dispDate(periodEndDate(range))} is in the past and the app doesn't keep a day-by-day stock ledger`}. Purchases and Sales are the invoice totals recorded in this period (Purchases/Sales tabs).${directExp.length?' Direct Expenses are expense categories tagged with the "Direct Expenses" subtitle in Settings → Accounts.':''} ${gross>=0?'Gross Profit':'Gross Loss'} carries down to the Profit &amp; Loss account, which also includes any non-trading income/expenses.</div>`;
 }
 function renderPnL(){
-  const f = periodFilter(reportRange);
+  const range = reportRange;
+  // Gross Profit/Loss carried down from the Trading Account — same math as renderTradingAccount(),
+  // so the two statements always agree. Sale/Purchase transactions are NOT re-summed here individually;
+  // their entire net effect enters the P&L as this one carried-down figure. Re-summing them (as the old
+  // code did) double-counted every sale and purchase — once in the Trading Account, once again here —
+  // and also skipped the opening/closing stock adjustment, so it silently disagreed with the Dashboard's
+  // Net Profit and the Balance Sheet's Retained Earnings.
+  const opening = openingStockValue(range);
+  const purchases = purchasesTotal(range);
+  const closing = closingStockValue();
+  const directExpTotal = round2(Object.values(directExpensesByCat(range)).reduce((s,v)=>s+v,0));
+  const cogs = opening + purchases - closing + directExpTotal;
+  const sales = salesTotal(range);
+  const gross = round2(sales - cogs);
+
+  const f = periodFilter(range);
   const tx = state.transactions.filter(t=>f(t.date));
   const incomeByCat = {};
   const expenseByCat = {};
   tx.forEach(t=>{
-    if(t.kind==='sale'||t.kind==='income') incomeByCat[t.category] = (incomeByCat[t.category]||0)+t.amount;
-    if(t.kind==='purchase'||t.kind==='expense') expenseByCat[t.category] = (expenseByCat[t.category]||0)+t.amount;
+    // Only genuine non-trading income/expense entries belong here — sale/purchase entries already
+    // flowed through the Trading Account and are represented above via Gross Profit/Loss. Expense
+    // categories tagged "Direct Expenses" are excluded too — they're shown on the Trading Account
+    // instead and are already folded into Gross Profit/Loss above via directExpTotal.
+    if(t.kind==='income') incomeByCat[t.category] = (incomeByCat[t.category]||0)+t.amount;
+    if(t.kind==='expense' && !isDirectExpenseCategory(t.category)) expenseByCat[t.category] = (expenseByCat[t.category]||0)+t.amount;
   });
   // Zero-value categories (no net activity in the period, or entries that exactly offset) are left
   // off the statement — a category isn't worth a line if it shows ₹0.
@@ -3743,20 +3838,35 @@ function renderPnL(){
   // identical to netting them against Sales/Purchases directly; this is just the conventional ledger
   // presentation, and it's what totalIncome()/totalExpense() already do under the hood, so Net Profit
   // here always agrees with the Dashboard, Balance Sheet retained earnings, etc.
-  const salesDisc = Object.entries(discountsByCategory('sale', reportRange)).filter(([,v])=>isNonZero(v));
-  const purchDisc = Object.entries(discountsByCategory('purchase', reportRange)).filter(([,v])=>isNonZero(v));
-  const totalInc = round2(inc.reduce((s,[,v])=>s+v,0) - salesDisc.reduce((s,[,v])=>s+v,0));
-  const totalExp = round2(exp.reduce((s,[,v])=>s+v,0) - purchDisc.reduce((s,[,v])=>s+v,0));
-  const profit = round2(totalInc-totalExp);
+  const salesDisc = Object.entries(discountsByCategory('sale', range)).filter(([,v])=>isNonZero(v));
+  const purchDisc = Object.entries(discountsByCategory('purchase', range)).filter(([,v])=>isNonZero(v));
+  const totalOtherInc = round2(inc.reduce((s,[,v])=>s+v,0) + purchDisc.reduce((s,[,v])=>s+v,0));
+  const totalOtherExp = round2(exp.reduce((s,[,v])=>s+v,0) + salesDisc.reduce((s,[,v])=>s+v,0));
+  const profit = round2(gross + totalOtherInc - totalOtherExp);
 
-  const drRows = exp.map(([c,v])=>({label:`To ${c}`, value:v}));
+  const drRows = [];
+  if(gross<0) drRows.push({label:'To Gross Loss b/d', value:-gross});
+  groupCatsBySubtitle(exp,'expense').forEach(g=>{
+    drRows.push({label:g.title, isHeader:true});
+    g.entries.forEach(([c,v])=> drRows.push({label:`To ${c}`, value:v, indent:true}));
+    drRows.push({label:`Total ${g.title}`, value:round2(g.entries.reduce((s,[,v])=>s+v,0)), isSubtotal:true});
+  });
   salesDisc.forEach(([c,v])=> drRows.push({label:`To ${c} (Discount Allowed)`, value:v}));
-  const crRows = inc.map(([c,v])=>({label:`By ${c}`, value:v}));
+  const crRows = [];
+  if(gross>=0) crRows.push({label:'By Gross Profit b/d', value:gross});
+  groupCatsBySubtitle(inc,'income').forEach(g=>{
+    crRows.push({label:g.title, isHeader:true});
+    g.entries.forEach(([c,v])=> crRows.push({label:`By ${c}`, value:v, indent:true}));
+    crRows.push({label:`Total ${g.title}`, value:round2(g.entries.reduce((s,[,v])=>s+v,0)), isSubtotal:true});
+  });
   purchDisc.forEach(([c,v])=> crRows.push({label:`By ${c} (Discount Received)`, value:v}));
   if(profit>=0) drRows.push({label:'To Net Profit c/d', value:profit});
   else crRows.push({label:'By Net Loss c/d', value:-profit});
-  const drTotal = round2(drRows.reduce((s,r)=>s+r.value,0));
-  const crTotal = round2(crRows.reduce((s,r)=>s+r.value,0));
+  // Totals are computed from the underlying figures directly (not by re-summing the display rows
+  // above), the same way the Balance Sheet computes totalAssets/totalLiab from its raw lists — this
+  // avoids double-counting the subtotal rows that now sit alongside their own line items.
+  const drTotal = round2((gross<0?-gross:0) + totalOtherExp + (profit>=0?profit:0));
+  const crTotal = round2((gross>=0?gross:0) + totalOtherInc + (profit<0?-profit:0));
 
   return `<div class="t-format">
     ${renderTAccountSide('left','Dr (Expenses)', drRows, 'Total', drTotal)}
@@ -4217,131 +4327,145 @@ function renderSettings(main){
   main.innerHTML = `
     <div class="topbar"><div><h1 class="disp">Settings</h1><div class="sub">Customise titles, accounts and backups for this business.</div></div></div>
 
-    <div class="panel">
-      <h2>Business details</h2>
-      <div class="settings-grid">
-        <div><label>Business name</label><input id="bizNameInput" value="${state.businessName}"></div>
-        <div><label>Currency symbol</label><input id="currencyInput" value="${state.currency}" maxlength="3"></div>
-        <div><label>Your GSTIN</label><input id="bizGstinInput" value="${state.businessGSTIN||''}" maxlength="15" placeholder="15-char GSTIN" style="text-transform:uppercase;"></div>
-        <div><label>Home state (for intra/inter-state GST)</label>
-          <select id="bizStateInput">
-            <option value="">— Select state —</option>
-            ${INDIA_STATE_LIST.map(s=>`<option value="${s}" ${state.homeState===s?'selected':''}>${s}</option>`).join('')}
-          </select>
+    <details class="panel report-collapse" open>
+      <summary><h2>Business and invoice details</h2></summary>
+      <div class="report-collapse-body">
+        <div class="settings-grid">
+          <div><label>Business name</label><input id="bizNameInput" value="${state.businessName}"></div>
+          <div><label>Currency symbol</label><input id="currencyInput" value="${state.currency}" maxlength="3"></div>
+          <div><label>Your GSTIN</label><input id="bizGstinInput" value="${state.businessGSTIN||''}" maxlength="15" placeholder="15-char GSTIN" style="text-transform:uppercase;"></div>
+          <div><label>Home state (for intra/inter-state GST)</label>
+            <select id="bizStateInput">
+              <option value="">— Select state —</option>
+              ${INDIA_STATE_LIST.map(s=>`<option value="${s}" ${state.homeState===s?'selected':''}>${s}</option>`).join('')}
+            </select>
+          </div>
+        </div>
+        <div class="row" style="margin-top:12px;"><button class="btn primary" id="saveBizBtn">Save</button></div>
+
+        <div style="border-top:1px solid var(--rule); margin:22px 0 18px;"></div>
+
+        <div class="field-note" style="margin-bottom:10px;">The fields below are used specifically on your printed / PDF invoices. Legal name and GSTIN default to what you entered above — only fill these in if your invoice should show something different (e.g. a registered legal entity name).</div>
+        <div class="settings-grid">
+          <div><label>Legal name on invoice <span class="tag">defaults to business name</span></label><input id="invNameInput" value="${state.invoiceSettings.businessLegalName}" placeholder="${state.businessName}"></div>
+          <div><label>Tagline (under name)</label><input id="invTaglineInput" value="${state.invoiceSettings.tagline||''}"></div>
+          <div><label>GSTIN on invoice <span class="tag">defaults to GSTIN above</span></label><input id="invGstinInput" value="${state.invoiceSettings.gstin}" maxlength="15" style="text-transform:uppercase;" placeholder="${state.businessGSTIN||''}"></div>
+          <div><label>PAN</label><input id="invPanInput" value="${state.invoiceSettings.pan}" maxlength="10" style="text-transform:uppercase;"></div>
+          <div><label>Address</label><input id="invAddressInput" value="${state.invoiceSettings.address}"></div>
+          <div><label>Mobile</label><input id="invMobileInput" value="${state.invoiceSettings.mobile}"></div>
+          <div><label>Email</label><input id="invEmailInput" value="${state.invoiceSettings.email}"></div>
+          <div><label>Bank name</label><input id="invBankInput" value="${state.invoiceSettings.bankName}"></div>
+          <div><label>Account holder</label><input id="invAccHolderInput" value="${state.invoiceSettings.accountHolder}"></div>
+          <div><label>Account number</label><input id="invAccNoInput" value="${state.invoiceSettings.accountNo}"></div>
+          <div><label>IFSC code</label><input id="invIfscInput" value="${state.invoiceSettings.ifsc}"></div>
+        </div>
+        <div class="row" style="margin-top:12px;"><button class="btn primary" id="saveInvBtn">Save invoice details</button></div>
+        <div class="field-note">Set the invoice number when you record the sale itself.</div>
+      </div>
+    </details>
+
+    <details class="panel report-collapse">
+      <summary><h2>Clients and vendors</h2></summary>
+      <div class="report-collapse-body">
+        <div class="row"><button class="btn ghost small" id="addPartyBtn">＋ Quick add</button></div>
+        <div style="margin-top:16px;">
+          <label style="display:block;margin-bottom:6px;">Clients <span class="tag">used on Sales</span></label>
+          <div class="chip-list" id="clientChips"></div>
+        </div>
+        <div style="margin-top:18px;">
+          <label style="display:block;margin-bottom:6px;">Vendors <span class="tag">used on Purchases</span></label>
+          <div class="chip-list" id="vendorChips"></div>
         </div>
       </div>
-      <div class="row" style="margin-top:12px;"><button class="btn primary" id="saveBizBtn">Save</button></div>
-    </div>
+    </details>
 
-    <div class="panel">
-      <h2>Appearance</h2>
-      <label style="display:block;margin-bottom:8px;">Color theme</label>
-      <div class="row" style="flex-wrap:wrap; gap:10px; align-items:center;">
-        ${Object.keys(COLOR_PRESETS).map(name=>`<button type="button" class="theme-swatch-btn" data-theme-preset="${name}" title="${name}" style="width:38px;height:38px;border-radius:50%;border:2px solid ${state.theme && state.theme.preset===name ? 'var(--ink)':'transparent'};background:${COLOR_PRESETS[name].accent};cursor:pointer;padding:0;"></button>`).join('')}
-        <button type="button" class="btn ${state.theme && state.theme.preset==='Custom' ? 'primary':'ghost'} small" id="customThemeToggleBtn">🎨 Custom palette</button>
-      </div>
-      <div class="field-note" id="activeThemeNote" style="margin-top:6px;">Active: ${(state.theme && state.theme.preset) || 'Lavender'}</div>
-      <div id="customThemeBuilder" class="row" style="display:${state.theme && state.theme.preset==='Custom' ? 'flex':'none'}; gap:14px; flex-wrap:wrap; margin-top:12px; padding:14px; background:var(--paper); border-radius:8px; border:1px solid var(--rule);">
-        <div><label>Background</label><input type="color" id="customPaper" value="${(state.theme && state.theme.colors && state.theme.colors.paper) || '#F9F8FC'}"></div>
-        <div><label>Text</label><input type="color" id="customInk" value="${(state.theme && state.theme.colors && state.theme.colors.ink) || '#3F3B54'}"></div>
-        <div><label>Accent</label><input type="color" id="customAccent" value="${(state.theme && state.theme.colors && state.theme.colors.accent) || '#6B84D1'}"></div>
-        <div><label>Warning</label><input type="color" id="customAmber" value="${(state.theme && state.theme.colors && state.theme.colors.amber) || '#C99A4E'}"></div>
-        <div><label>Danger</label><input type="color" id="customBad" value="${(state.theme && state.theme.colors && state.theme.colors.bad) || '#D97A93'}"></div>
-        <div><label>Success</label><input type="color" id="customGood" value="${(state.theme && state.theme.colors && state.theme.colors.good) || '#6FA88C'}"></div>
-        <div style="align-self:flex-end;"><button type="button" class="btn primary small" id="applyCustomThemeBtn">Apply custom colors</button></div>
-      </div>
+    <details class="panel report-collapse">
+      <summary><h2>Accounts</h2></summary>
+      <div class="report-collapse-body">
+        <label style="display:block;margin-bottom:6px;">Income categories <span class="tag">used in Sales &amp; Other Income</span></label>
+        <div class="row"><input id="newIncomeCat" placeholder="e.g. Consulting Fees" style="max-width:200px;"><input id="newIncomeCatSubtitle" list="incomeSubtitleList" placeholder="Subtitle (optional)" style="max-width:150px;"><button class="btn ghost small" id="addIncomeCat">＋ Add</button></div>
+        <div class="chip-list" id="incomeChips"></div>
 
-      <label style="display:block;margin:18px 0 8px;">Font</label>
-      <div class="row" style="flex-wrap:wrap; gap:10px;">
-        ${Object.keys(FONT_PRESETS).map(name=>`<button type="button" class="btn ${state.fontChoice && state.fontChoice.preset===name ? 'primary':'ghost'} small" data-font-preset="${name}" style="font-family:${FONT_PRESETS[name]};">${name}</button>`).join('')}
-        <button type="button" class="btn ${state.fontChoice && state.fontChoice.preset==='Custom' ? 'primary':'ghost'} small" id="customFontToggleBtn">⬆ Upload your own</button>
-      </div>
-      <div id="customFontUploadRow" class="row" style="display:${state.fontChoice && state.fontChoice.preset==='Custom' ? 'flex':'none'}; gap:10px; align-items:center; margin-top:10px;">
-        <input type="file" id="customFontFile" accept=".ttf,.otf,.woff,.woff2">
-        <span class="field-note" id="customFontName" style="margin:0;">${(state.fontChoice && state.fontChoice.customName) || 'No font uploaded yet'}</span>
-      </div>
-      <div class="field-note" style="margin-top:10px;">Colors and fonts apply across the whole app and are saved with your data — same on every device you open this file on. Numbers always keep their own fixed monospace font for alignment, regardless of what's picked here.</div>
-    </div>
-
-    <div class="panel">
-      <h2>Income titles <span class="tag">used in Sales &amp; Other Income</span></h2>
-      <div class="row"><input id="newIncomeCat" placeholder="e.g. Consulting Fees" style="max-width:260px;"><button class="btn ghost small" id="addIncomeCat">＋ Add</button></div>
-      <div class="chip-list" id="incomeChips"></div>
-    </div>
-
-    <div class="panel">
-      <h2>Expense titles <span class="tag">used in Purchases &amp; Expenses</span></h2>
-      <div class="row"><input id="newExpenseCat" placeholder="e.g. Equipment Repair" style="max-width:260px;"><button class="btn ghost small" id="addExpenseCat">＋ Add</button></div>
-      <div class="chip-list" id="expenseChips"></div>
-    </div>
-
-    <div class="panel">
-      <h2>Clients <span class="tag">used on Sales — name, address, contact, GST</span></h2>
-      <div class="row"><button class="btn ghost small" id="addClientBtn">＋ Quick add client</button></div>
-      <div class="chip-list" id="clientChips"></div>
-    </div>
-
-    <div class="panel">
-      <h2>Vendors <span class="tag">used on Purchases — name, address, contact, GST</span></h2>
-      <div class="row"><button class="btn ghost small" id="addVendorBtn">＋ Quick add vendor</button></div>
-      <div class="chip-list" id="vendorChips"></div>
-    </div>
-
-    <div class="panel">
-      <h2>Balance sheet accounts</h2>
-      <div class="settings-grid">
-        <div>
-          <label>Asset accounts</label>
-          <div class="row"><input id="newAssetAcc" placeholder="Account name" style="max-width:130px;"><input id="newAssetBal" type="number" placeholder="Opening ₹" style="max-width:90px;"><input id="newAssetSubtitle" list="assetSubtitleList" placeholder="Subtitle (optional)" style="max-width:130px;"><button class="btn ghost small" id="addAssetAcc">＋</button></div>
-          <div class="chip-list" id="assetChips"></div>
+        <div style="margin-top:20px;">
+          <label style="display:block;margin-bottom:6px;">Expense categories <span class="tag">used in Purchases &amp; Expenses</span></label>
+          <div class="row"><input id="newExpenseCat" placeholder="e.g. Equipment Repair" style="max-width:200px;"><input id="newExpenseCatSubtitle" list="expenseSubtitleList" placeholder="Subtitle (optional)" style="max-width:150px;"><button class="btn ghost small" id="addExpenseCat">＋ Add</button></div>
+          <div class="chip-list" id="expenseChips"></div>
         </div>
-        <div>
-          <label>Liability accounts</label>
-          <div class="row"><input id="newLiabAcc" placeholder="Account name" style="max-width:130px;"><input id="newLiabBal" type="number" placeholder="Opening ₹" style="max-width:90px;"><input id="newLiabSubtitle" list="liabilitySubtitleList" placeholder="Subtitle (optional)" style="max-width:130px;"><button class="btn ghost small" id="addLiabAcc">＋</button></div>
-          <div class="chip-list" id="liabChips"></div>
+        <div class="field-note" style="margin-top:8px;">The Subtitle groups a category on the Profit &amp; Loss report — same idea as Balance sheet account subtitles below. Common ones: Administrative, Selling &amp; Distribution, Financial (for expenses); Other Income (for income). A category left blank shows under "Other".</div>
+
+        <div style="border-top:1px solid var(--rule); margin:20px 0 16px;"></div>
+
+        <label style="display:block;margin-bottom:6px;">Balance sheet accounts</label>
+        <div class="settings-grid">
+          <div>
+            <label>Asset accounts</label>
+            <div class="row"><input id="newAssetAcc" placeholder="Account name" style="max-width:130px;"><input id="newAssetBal" type="number" placeholder="Opening ₹" style="max-width:90px;"><input id="newAssetSubtitle" list="assetSubtitleList" placeholder="Subtitle (optional)" style="max-width:130px;"><button class="btn ghost small" id="addAssetAcc">＋</button></div>
+            <div class="chip-list" id="assetChips"></div>
+          </div>
+          <div>
+            <label>Liability accounts</label>
+            <div class="row"><input id="newLiabAcc" placeholder="Account name" style="max-width:130px;"><input id="newLiabBal" type="number" placeholder="Opening ₹" style="max-width:90px;"><input id="newLiabSubtitle" list="liabilitySubtitleList" placeholder="Subtitle (optional)" style="max-width:130px;"><button class="btn ghost small" id="addLiabAcc">＋</button></div>
+            <div class="chip-list" id="liabChips"></div>
+          </div>
+          <div>
+            <label>Equity accounts</label>
+            <div class="row"><input id="newEqAcc" placeholder="Account name" style="max-width:150px;"><input id="newEqBal" type="number" placeholder="Opening ₹" style="max-width:100px;"><input id="newEqSubtitle" list="equitySubtitleList" placeholder="Subtitle (optional)" style="max-width:130px;"><button class="btn ghost small" id="addEqAcc">＋</button></div>
+            <div class="chip-list" id="eqChips"></div>
+          </div>
         </div>
-        <div>
-          <label>Equity accounts</label>
-          <div class="row"><input id="newEqAcc" placeholder="Account name" style="max-width:150px;"><input id="newEqBal" type="number" placeholder="Opening ₹" style="max-width:100px;"><input id="newEqSubtitle" list="equitySubtitleList" placeholder="Subtitle (optional)" style="max-width:130px;"><button class="btn ghost small" id="addEqAcc">＋</button></div>
-          <div class="chip-list" id="eqChips"></div>
+        <div class="field-note">The small "Subtitle" box next to each account is what groups it on the Balance Sheet — type any name you like (e.g. "Cash & Bank Balances", "Loans & Advances Given", "Fixed Assets", "Loans (Bank/NBFC)", "Unsecured Loans") and it'll suggest subtitles you've already used. Accounts left blank show under "Other" on the Balance Sheet. Click ✎ to correct an account's title, or click its balance to edit the opening amount (e.g. after taking a loan, or an accountant's adjustment).</div>
+      </div>
+    </details>
+
+    <details class="panel report-collapse">
+      <summary><h2>Appearance</h2></summary>
+      <div class="report-collapse-body">
+        <label style="display:block;margin-bottom:8px;">Color theme</label>
+        <div class="row" style="flex-wrap:wrap; gap:10px; align-items:center;">
+          ${Object.keys(COLOR_PRESETS).map(name=>`<button type="button" class="theme-swatch-btn" data-theme-preset="${name}" title="${name}" style="width:38px;height:38px;border-radius:50%;border:2px solid ${state.theme && state.theme.preset===name ? 'var(--ink)':'transparent'};background:${COLOR_PRESETS[name].accent};cursor:pointer;padding:0;"></button>`).join('')}
+          <button type="button" class="btn ${state.theme && state.theme.preset==='Custom' ? 'primary':'ghost'} small" id="customThemeToggleBtn">🎨 Custom palette</button>
         </div>
-      </div>
-      <div class="field-note">The small "Subtitle" box next to each account is what groups it on the Balance Sheet — type any name you like (e.g. "Cash & Bank Balances", "Loans & Advances Given", "Fixed Assets", "Loans (Bank/NBFC)", "Unsecured Loans") and it'll suggest subtitles you've already used. Accounts left blank show under "Other" on the Balance Sheet. Click ✎ to correct an account's title, or click its balance to edit the opening amount (e.g. after taking a loan, or an accountant's adjustment).</div>
-    </div>
+        <div class="field-note" id="activeThemeNote" style="margin-top:6px;">Active: ${(state.theme && state.theme.preset) || 'Lavender'}</div>
+        <div id="customThemeBuilder" class="row" style="display:${state.theme && state.theme.preset==='Custom' ? 'flex':'none'}; gap:14px; flex-wrap:wrap; margin-top:12px; padding:14px; background:var(--paper); border-radius:8px; border:1px solid var(--rule);">
+          <div><label>Background</label><input type="color" id="customPaper" value="${(state.theme && state.theme.colors && state.theme.colors.paper) || '#F9F8FC'}"></div>
+          <div><label>Text</label><input type="color" id="customInk" value="${(state.theme && state.theme.colors && state.theme.colors.ink) || '#3F3B54'}"></div>
+          <div><label>Accent</label><input type="color" id="customAccent" value="${(state.theme && state.theme.colors && state.theme.colors.accent) || '#6B84D1'}"></div>
+          <div><label>Warning</label><input type="color" id="customAmber" value="${(state.theme && state.theme.colors && state.theme.colors.amber) || '#C99A4E'}"></div>
+          <div><label>Danger</label><input type="color" id="customBad" value="${(state.theme && state.theme.colors && state.theme.colors.bad) || '#D97A93'}"></div>
+          <div><label>Success</label><input type="color" id="customGood" value="${(state.theme && state.theme.colors && state.theme.colors.good) || '#6FA88C'}"></div>
+          <div style="align-self:flex-end;"><button type="button" class="btn primary small" id="applyCustomThemeBtn">Apply custom colors</button></div>
+        </div>
 
-    <div class="panel">
-      <h2>Invoice details <span class="tag">used on printed / PDF invoices</span></h2>
-      <div class="settings-grid">
-        <div><label>Business legal name (on invoice)</label><input id="invNameInput" value="${state.invoiceSettings.businessLegalName}"></div>
-        <div><label>Tagline (under name)</label><input id="invTaglineInput" value="${state.invoiceSettings.tagline||''}"></div>
-        <div><label>GSTIN</label><input id="invGstinInput" value="${state.invoiceSettings.gstin}" maxlength="15" style="text-transform:uppercase;"></div>
-        <div><label>PAN</label><input id="invPanInput" value="${state.invoiceSettings.pan}" maxlength="10" style="text-transform:uppercase;"></div>
-        <div><label>Address</label><input id="invAddressInput" value="${state.invoiceSettings.address}"></div>
-        <div><label>Mobile</label><input id="invMobileInput" value="${state.invoiceSettings.mobile}"></div>
-        <div><label>Email</label><input id="invEmailInput" value="${state.invoiceSettings.email}"></div>
-        <div><label>Bank name</label><input id="invBankInput" value="${state.invoiceSettings.bankName}"></div>
-        <div><label>Account holder</label><input id="invAccHolderInput" value="${state.invoiceSettings.accountHolder}"></div>
-        <div><label>Account number</label><input id="invAccNoInput" value="${state.invoiceSettings.accountNo}"></div>
-        <div><label>IFSC code</label><input id="invIfscInput" value="${state.invoiceSettings.ifsc}"></div>
+        <label style="display:block;margin:18px 0 8px;">Font</label>
+        <div class="row" style="flex-wrap:wrap; gap:10px;">
+          ${Object.keys(FONT_PRESETS).map(name=>`<button type="button" class="btn ${state.fontChoice && state.fontChoice.preset===name ? 'primary':'ghost'} small" data-font-preset="${name}" style="font-family:${FONT_PRESETS[name]};">${name}</button>`).join('')}
+          <button type="button" class="btn ${state.fontChoice && state.fontChoice.preset==='Custom' ? 'primary':'ghost'} small" id="customFontToggleBtn">⬆ Upload your own</button>
+        </div>
+        <div id="customFontUploadRow" class="row" style="display:${state.fontChoice && state.fontChoice.preset==='Custom' ? 'flex':'none'}; gap:10px; align-items:center; margin-top:10px;">
+          <input type="file" id="customFontFile" accept=".ttf,.otf,.woff,.woff2">
+          <span class="field-note" id="customFontName" style="margin:0;">${(state.fontChoice && state.fontChoice.customName) || 'No font uploaded yet'}</span>
+        </div>
+        <div class="field-note" style="margin-top:10px;">Colors and fonts apply across the whole app and are saved with your data — same on every device you open this file on. Numbers always keep their own fixed monospace font for alignment, regardless of what's picked here.</div>
       </div>
-      <div class="row" style="margin-top:12px;"><button class="btn primary" id="saveInvBtn">Save invoice details</button></div>
-      <div class="field-note">These appear on every printed / PDF invoice generated from a Sales entry. Set the invoice number when you record the sale itself.</div>
-    </div>
+    </details>
 
-    <div class="panel">
-      <h2>Backup &amp; restore</h2>
-      <p class="sub" style="margin-top:-4px;">Data lives only in this browser, on this computer. Back up often.</p>
-      <div class="row">
-        <button class="btn" id="exportJsonBtn">⬇ Download backup (.json)</button>
-        <button class="btn ghost" id="importJsonBtn">⬆ Restore from backup</button>
-        <input type="file" id="importJsonFile" accept=".json" style="display:none;">
+    <details class="panel report-collapse">
+      <summary><h2>Data and danger zone</h2></summary>
+      <div class="report-collapse-body">
+        <label style="display:block;margin-bottom:6px;">Backup and restore</label>
+        <p class="sub" style="margin-top:-4px;">Data lives only in this browser, on this computer. Back up often.</p>
+        <div class="row">
+          <button class="btn" id="exportJsonBtn">⬇ Download backup (.json)</button>
+          <button class="btn ghost" id="importJsonBtn">⬆ Restore from backup</button>
+          <input type="file" id="importJsonFile" accept=".json" style="display:none;">
+        </div>
+
+        <div style="border-top:1px solid var(--rule); margin:20px 0 16px;"></div>
+
+        <label style="display:block;margin-bottom:6px;">Danger zone</label>
+        <button class="btn danger" id="resetBtn">Erase all data &amp; start fresh</button>
       </div>
-    </div>
-
-    <div class="panel">
-      <h2>Danger zone</h2>
-      <button class="btn danger" id="resetBtn">Erase all data &amp; start fresh</button>
-    </div>
+    </details>
   `;
 
   document.getElementById('saveBizBtn').addEventListener('click', ()=>{
@@ -4421,9 +4545,22 @@ function renderSettings(main){
   });
 
   function catUsed(group, name){ return state.transactions.some(t=> (group==='income'? (t.kind==='sale'||t.kind==='income') : (t.kind==='purchase'||t.kind==='expense')) && t.category===name); }
+  const STANDARD_SUBTITLE_SUGGESTIONS = {
+    expense: ['Direct Expenses','Administrative','Selling & Distribution','Financial','Other Expenses'],
+    income: ['Other Income']
+  };
   function drawCatChips(group, elId){
     const el = document.getElementById(elId);
-    el.innerHTML = state.categories[group].map(c=>`<div class="chip">${c}<button data-editcat="${group}::${c}" title="Edit" style="background:var(--accent-soft); color:var(--accent);">✎</button><button data-rmcat="${group}::${c}" title="Remove">×</button></div>`).join('');
+    const subtitles = state.categorySubtitles[group];
+    const used = state.categories[group].map(c=>subtitles[c]).filter(Boolean);
+    const suggestions = [...new Set([...used, ...STANDARD_SUBTITLE_SUGGESTIONS[group]])];
+    const datalistId = group+'SubtitleList';
+    const datalistHtml = `<datalist id="${datalistId}">${suggestions.map(s=>`<option value="${s}">`).join('')}</datalist>`;
+    el.innerHTML = datalistHtml + state.categories[group].map(c=>`<div class="chip">${c}
+      <input class="cat-subtitle-input" data-cat-subtitle="${group}::${c}" list="${datalistId}" value="${subtitles[c]||''}" placeholder="Subtitle" title="Groups this category on the Trading Account / P&L report" style="width:105px;font-size:10.5px;padding:2px 6px;border-radius:10px;border:1px solid var(--rule);background:var(--amber-soft);color:var(--amber);">
+      <button data-editcat="${group}::${c}" title="Edit" style="background:var(--accent-soft); color:var(--accent);">✎</button>
+      <button data-rmcat="${group}::${c}" title="Remove">×</button>
+    </div>`).join('');
   }
   drawCatChips('income','incomeChips'); drawCatChips('expense','expenseChips');
 
@@ -4438,8 +4575,7 @@ function renderSettings(main){
   }
   drawPartyChips('client','clientChips'); drawPartyChips('vendor','vendorChips');
 
-  document.getElementById('addClientBtn').addEventListener('click', ()=> openPartyModal('client', null, ()=> drawPartyChips('client','clientChips')));
-  document.getElementById('addVendorBtn').addEventListener('click', ()=> openPartyModal('vendor', null, ()=> drawPartyChips('vendor','vendorChips')));
+  document.getElementById('addPartyBtn').addEventListener('click', ()=> openPartyModal(null, null, ()=>{ drawPartyChips('client','clientChips'); drawPartyChips('vendor','vendorChips'); }));
 
   main.addEventListener('click', e=>{
     const editBtn = e.target.closest('[data-editparty]');
@@ -4463,13 +4599,19 @@ function renderSettings(main){
     const v = document.getElementById('newIncomeCat').value.trim();
     if(!v) return;
     if(state.categories.income.includes(v)){ toast('That title already exists.'); return; }
-    state.categories.income.push(v); save(); document.getElementById('newIncomeCat').value=''; drawCatChips('income','incomeChips');
+    state.categories.income.push(v);
+    const sub = document.getElementById('newIncomeCatSubtitle').value.trim();
+    if(sub) state.categorySubtitles.income[v] = sub;
+    save(); document.getElementById('newIncomeCat').value=''; document.getElementById('newIncomeCatSubtitle').value=''; drawCatChips('income','incomeChips');
   });
   document.getElementById('addExpenseCat').addEventListener('click', ()=>{
     const v = document.getElementById('newExpenseCat').value.trim();
     if(!v) return;
     if(state.categories.expense.includes(v)){ toast('That title already exists.'); return; }
-    state.categories.expense.push(v); save(); document.getElementById('newExpenseCat').value=''; drawCatChips('expense','expenseChips');
+    state.categories.expense.push(v);
+    const sub = document.getElementById('newExpenseCatSubtitle').value.trim();
+    if(sub) state.categorySubtitles.expense[v] = sub;
+    save(); document.getElementById('newExpenseCat').value=''; document.getElementById('newExpenseCatSubtitle').value=''; drawCatChips('expense','expenseChips');
   });
   main.addEventListener('click', e=>{
     const editBtn = e.target.closest('[data-editcat]');
@@ -4484,6 +4626,10 @@ function renderSettings(main){
       if(state.categories[group].some(c=>c.toLowerCase()===v.toLowerCase())){ toast('That title already exists.'); return; }
       const idx = state.categories[group].indexOf(name);
       if(idx>-1) state.categories[group][idx] = v;
+      if(state.categorySubtitles[group][name]!==undefined){
+        state.categorySubtitles[group][v] = state.categorySubtitles[group][name];
+        delete state.categorySubtitles[group][name];
+      }
       state.transactions.forEach(t=>{
         const isIncomeKind = (t.kind==='sale'||t.kind==='income');
         const isExpenseKind = (t.kind==='purchase'||t.kind==='expense');
@@ -4497,7 +4643,18 @@ function renderSettings(main){
     const [group, name] = btn.dataset.rmcat.split('::');
     if(catUsed(group,name)){ toast(`Can't remove "${name}" — it's used by existing entries.`); return; }
     state.categories[group] = state.categories[group].filter(c=>c!==name);
+    delete state.categorySubtitles[group][name];
     save(); drawCatChips(group, group==='income'?'incomeChips':'expenseChips');
+  });
+  main.addEventListener('change', e=>{
+    const csi = e.target.closest('.cat-subtitle-input');
+    if(csi){
+      const [group, name] = csi.dataset.catSubtitle.split('::');
+      const v = csi.value.trim();
+      if(v) state.categorySubtitles[group][name] = v;
+      else delete state.categorySubtitles[group][name];
+      save(); drawCatChips(group, group==='income'?'incomeChips':'expenseChips');
+    }
   });
 
   function drawAccChips(kind, elId){
