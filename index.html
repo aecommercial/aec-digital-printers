@@ -744,6 +744,19 @@ function txItems(t){
   return [{ itemId: t.itemId||null, name: item ? item.name : (t.category||'Item'), qty, rate: (item && qty) ? round2((Number(t.amount)||0)/qty) : null, amount: Number(t.amount)||0, gstRate: t.gstRate!=null?t.gstRate:18 }];
 }
 function itemValue(item){ return (Number(item.qty)||0) * (Number(item.cost)||0); }
+/* Sales and Purchases no longer collect a manual Category — since one invoice can hold several
+   different items, a single title per invoice never fit well anyway. Instead, every line already
+   points at an inventory item, and every item already carries a Type (set once in Inventory) — so
+   that Type is what now groups Sales/Purchases wherever a breakdown is needed: Cash Flow, the
+   Trading Account, and the Balance Sheet's inventory line. A line with no linked item (a manual/
+   service line) falls under "Manual / Service"; a linked item left with no Type set falls under
+   "Other" — same "ungrouped falls under Other" convention used everywhere else in the app. */
+function itemTypeOf(itemId){
+  if(!itemId) return 'Manual / Service';
+  const item = findItem(itemId);
+  if(!item) return 'Manual / Service';
+  return (item.type||'').trim() || 'Other';
+}
 /* Weighted-average costing: blends a new purchase's price into the item's existing stock so the
    item always carries one current cost = (total value on hand) ÷ (total qty on hand). */
 function weightedAvgIn(item, qty, rate){
@@ -2245,7 +2258,6 @@ function renderGeneralEntryTab(main){
 function renderGstTxTab(main, kind, title, subtitle, catGroup){
   const rows = txByKind(kind).sort(byDateThenNewestFirst);
   const monthTotal = rows.filter(t=>isSameMonth(t.date)).reduce((s,t)=>s+txTotal(t),0);
-  const cats = state.categories[catGroup];
   const flow = kind==='sale' ? 'in' : 'out';
   const invItems = state.inventoryItems;
   const partyKind = kind==='sale' ? 'client' : 'vendor';
@@ -2300,12 +2312,6 @@ function renderGstTxTab(main, kind, title, subtitle, catGroup){
           </div>` : ''}
           <div><label>${kind==='sale'?'Invoice':'Bill'} No.</label>
             <input name="invoiceNo" id="invoiceNoInput" placeholder="e.g. ${kind==='sale'?'INV-0001':'BILL-0001'}">
-          </div>
-          <div><label>Title / Category</label>
-            <select name="category" id="catSelect" required>
-              ${cats.map(c=>`<option value="${c}">${c}</option>`).join('')}
-              <option value="__new__">＋ Add new title…</option>
-            </select>
           </div>
           <div><label>${partyLabel}</label>
             <select id="partySelect">
@@ -2404,20 +2410,6 @@ function renderGstTxTab(main, kind, title, subtitle, catGroup){
       </table>
     </div>
   `;
-
-  const catSelect = document.getElementById('catSelect');
-  catSelect.addEventListener('change', ()=>{
-    if(catSelect.value==='__new__'){
-      const name = prompt(`New ${catGroup} title:`);
-      if(name && name.trim()){
-        const clean = name.trim();
-        if(!state.categories[catGroup].includes(clean)){ state.categories[catGroup].push(clean); save(); }
-        const opt = document.createElement('option'); opt.value=clean; opt.textContent=clean;
-        catSelect.insertBefore(opt, catSelect.lastElementChild);
-        catSelect.value = clean;
-      } else { catSelect.value = cats[0]; }
-    }
-  });
 
   /* Sales only: auto-number the invoice in sequence, asking only for the first invoice of a financial year.
      Local GST and local Cash invoices now share one continuous sequence (only the GST% shown/hidden on
@@ -2633,7 +2625,6 @@ function renderGstTxTab(main, kind, title, subtitle, catGroup){
 
     const amount = round2(rowsData.reduce((s,l)=>s+l.amount,0));
     if(!amount || amount<=0){ toast('Enter a valid taxable value.'); return; }
-    const category = f.get('category')==='__new__' ? cats[0] : f.get('category');
     const saleChannel = (kind==='sale'||kind==='purchase') ? (f.get('channel')||'local-gst') : null;
     const supplyType = detectSupplyType(f.get('gstin'), f.get('buyerState') || (selectedParty ? selectedParty.state : null));
     // group line items by their own GST rate, then compute tax per group and sum
@@ -2736,7 +2727,7 @@ function renderGstTxTab(main, kind, title, subtitle, catGroup){
           state.inventoryMovements.push({ id: uid(), date, itemId: item.id, type: kind==='sale'?'out':'in', qty: l.qty, rate: kind==='purchase'?l.rate:undefined, note: `Auto: ${title.replace(/s$/,'')} ${f.get('invoiceNo')||''}`.trim(), txId: editingId });
         }
         Object.assign(existing, {
-          date, category, amount,
+          date, amount,
           description: f.get('description')||'', invoiceNo: f.get('invoiceNo')||'', gstin: (f.get('gstin')||'').toUpperCase(),
           partyId: selectedParty ? selectedParty.id : null,
           address: selectedParty ? (selectedParty.address||'') : '',
@@ -2795,7 +2786,7 @@ function renderGstTxTab(main, kind, title, subtitle, catGroup){
     }
 
     state.transactions.push({
-      id, date, kind, category, amount,
+      id, date, kind, amount,
       account: kind==='sale' ? RECEIVABLE_ACCOUNT : (kind==='purchase' ? PAYABLE_ACCOUNT : f.get('account')), description: f.get('description')||'', flow,
       invoiceNo: f.get('invoiceNo')||'', gstin: (f.get('gstin')||'').toUpperCase(),
       partyId: selectedParty ? selectedParty.id : null,
@@ -2857,7 +2848,6 @@ function renderGstTxTab(main, kind, title, subtitle, catGroup){
     invoiceNoInput.readOnly = false;
     const invoiceNoNote = document.getElementById('invoiceNoNote');
     if(invoiceNoNote) invoiceNoNote.textContent = "Editing this entry — its number won't auto-change.";
-    if([...catSelect.options].some(o=>o.value===t.category)) catSelect.value = t.category;
     if(channelInput) channelInput.value = t.saleChannel || 'local-gst';
     if(t.partyId){
       const p = findParty(kind, t.partyId);
@@ -3459,11 +3449,35 @@ function cashCategoryBreakdown(range){
   const f = periodFilter(range);
   const names = cashBankAccounts().map(a=>a.name);
   const inCats = {}, outCats = {};
+  // For a sale/purchase, a payment settles the whole invoice, but the invoice can hold several
+  // different items. The payment is split across the invoice's lines by each line's share of the
+  // invoice's taxable value, and credited to each line's item Type — so a mixed invoice shows up
+  // split across its actual item types instead of lumped under one manually-picked label.
+  const typeSharesOf = (t)=>{
+    const items = txItems(t);
+    const invoiceTotal = items.reduce((s,l)=>s+(Number(l.amount)||0),0) || 1;
+    const shares = {};
+    items.forEach(l=>{
+      const type = itemTypeOf(l.itemId);
+      shares[type] = (shares[type]||0) + (Number(l.amount)||0)/invoiceTotal;
+    });
+    return shares;
+  };
   state.transactions.forEach(t=>{
     if(t.kind==='sale' && t.payments){
-      t.payments.forEach(p=>{ if(names.includes(p.account) && p.amount>0 && f(p.date||t.date)) inCats[t.category] = round2((inCats[t.category]||0) + Number(p.amount)); });
+      const shares = typeSharesOf(t);
+      t.payments.forEach(p=>{
+        if(names.includes(p.account) && p.amount>0 && f(p.date||t.date)){
+          Object.entries(shares).forEach(([type,share])=>{ inCats[type] = round2((inCats[type]||0) + Number(p.amount)*share); });
+        }
+      });
     } else if(t.kind==='purchase' && t.payments){
-      t.payments.forEach(p=>{ if(names.includes(p.account) && p.amount>0 && f(p.date||t.date)) outCats[t.category] = round2((outCats[t.category]||0) + Number(p.amount)); });
+      const shares = typeSharesOf(t);
+      t.payments.forEach(p=>{
+        if(names.includes(p.account) && p.amount>0 && f(p.date||t.date)){
+          Object.entries(shares).forEach(([type,share])=>{ outCats[type] = round2((outCats[type]||0) + Number(p.amount)*share); });
+        }
+      });
     } else if((t.kind==='income'||t.kind==='expense') && names.includes(t.account) && f(t.date)){
       const amt = txTotal(t);
       if(t.flow==='in') inCats[t.category] = round2((inCats[t.category]||0)+amt);
@@ -3764,6 +3778,22 @@ function directExpensesByCat(range){
   });
   return map;
 }
+/* Groups a period's Sales or Purchases by item Type (see itemTypeOf above), summing each line's
+   taxable amount directly from the invoice — not prorated from payments, since the Trading Account
+   works off invoiced amounts, not cash actually received (that distinction is what Cash Flow is for).
+   Summing every line's amount this way always equals salesTotal()/purchasesTotal() for the same
+   period, since t.amount is exactly the sum of its own lines' amounts at save time. */
+function itemsByTypeForKind(kind, range){
+  const f = periodFilter(range);
+  const map = {};
+  txByKind(kind).filter(t=>f(t.date)).forEach(t=>{
+    txItems(t).forEach(l=>{
+      const type = itemTypeOf(l.itemId);
+      map[type] = round2((map[type]||0) + (Number(l.amount)||0));
+    });
+  });
+  return map;
+}
 function renderTradingAccount(range){
   const opening = openingStockValue(range);
   const purchases = purchasesTotal(range);
@@ -3774,20 +3804,33 @@ function renderTradingAccount(range){
   const sales = salesTotal(range);
   const gross = sales - cogs;
   const closingIsAsOfToday = periodEndDate(range) === todayISO();
+  const purchByType = Object.entries(itemsByTypeForKind('purchase', range)).filter(([,v])=>isNonZero(v));
+  const salesByType = Object.entries(itemsByTypeForKind('sale', range)).filter(([,v])=>isNonZero(v));
 
   const drRows = [
-    {label:'To Opening Stock', value:opening},
-    {label:'To Purchases', value:purchases}
+    {label:'To Opening Stock', value:opening}
   ];
+  if(purchByType.length>1){
+    drRows.push({label:'Purchases', isHeader:true});
+    purchByType.forEach(([type,v])=> drRows.push({label:`To ${type}`, value:v, indent:true}));
+    drRows.push({label:'Total Purchases', value:purchases, isSubtotal:true});
+  } else {
+    drRows.push({label:'To Purchases', value:purchases});
+  }
   if(directExp.length){
     drRows.push({label:'Direct Expenses', isHeader:true});
     directExp.forEach(([c,v])=> drRows.push({label:`To ${c}`, value:v, indent:true}));
     drRows.push({label:'Total Direct Expenses', value:directExpTotal, isSubtotal:true});
   }
-  const crRows = [
-    {label:'By Sales', value:sales},
-    {label:`By Closing Stock${closingIsAsOfToday?'':' (as of today)'}`, value:closing}
-  ];
+  const crRows = [];
+  if(salesByType.length>1){
+    crRows.push({label:'Sales', isHeader:true});
+    salesByType.forEach(([type,v])=> crRows.push({label:`By ${type}`, value:v, indent:true}));
+    crRows.push({label:'Total Sales', value:sales, isSubtotal:true});
+  } else {
+    crRows.push({label:'By Sales', value:sales});
+  }
+  crRows.push({label:`By Closing Stock${closingIsAsOfToday?'':' (as of today)'}`, value:closing});
   if(gross>=0) drRows.push({label:'To Gross Profit c/d', value:gross});
   else crRows.push({label:'By Gross Loss c/d', value:-gross});
   // Computed from the underlying figures, not by re-summing drRows/crRows — same reason as the P&L
@@ -3799,7 +3842,7 @@ function renderTradingAccount(range){
     ${renderTAccountSide('left','Dr', drRows, 'Total', drTotal)}
     ${renderTAccountSide('right','Cr', crRows, 'Total', crTotal)}
   </div>
-  <div class="field-note">Opening Stock is reconstructed from your stock movement history as it stood at the start of the period; Closing Stock is always your current stock on hand as of today${closingIsAsOfToday?'':`, since ${dispDate(periodEndDate(range))} is in the past and the app doesn't keep a day-by-day stock ledger`}. Purchases and Sales are the invoice totals recorded in this period (Purchases/Sales tabs).${directExp.length?' Direct Expenses are expense categories tagged with the "Direct Expenses" subtitle in Settings → Accounts.':''} ${gross>=0?'Gross Profit':'Gross Loss'} carries down to the Profit &amp; Loss account, which also includes any non-trading income/expenses.</div>`;
+  <div class="field-note">Opening Stock is reconstructed from your stock movement history as it stood at the start of the period; Closing Stock is always your current stock on hand as of today${closingIsAsOfToday?'':`, since ${dispDate(periodEndDate(range))} is in the past and the app doesn't keep a day-by-day stock ledger`}. Purchases and Sales are the invoice totals recorded in this period (Purchases/Sales tabs), broken down by each item's Type (set in Inventory) when more than one type appears.${directExp.length?' Direct Expenses are expense categories tagged with the "Direct Expenses" subtitle in Settings → Accounts.':''} ${gross>=0?'Gross Profit':'Gross Loss'} carries down to the Profit &amp; Loss account, which also includes any non-trading income/expenses.</div>`;
 }
 function renderPnL(){
   const range = reportRange;
@@ -3909,7 +3952,13 @@ const isNonZero = (n)=> Math.abs(n) > BS_ZERO_EPS;
 
 function renderBalanceSheet(){
   const rawAssets = state.accounts.asset.map(a=>({name:a.name, bal:assetBalance(a.name), subtitle:a.subtitle}));
-  if(state.inventoryItems.length) rawAssets.push({name:'Inventory (at cost)', bal:inventoryValue(), subtitle:'Inventory / Stock-in-Trade'});
+  if(state.inventoryItems.length){
+    const invByType = {};
+    state.inventoryItems.forEach(i=>{ const type=(i.type||'').trim()||'Other'; invByType[type] = round2((invByType[type]||0) + itemValue(i)); });
+    Object.entries(invByType).forEach(([type,val])=>{
+      if(isNonZero(val)) rawAssets.push({name: Object.keys(invByType).length>1 ? `Inventory — ${type}` : 'Inventory (at cost)', bal:val, subtitle:'Inventory / Stock-in-Trade'});
+    });
+  }
   const rawLiabilities = state.accounts.liability.map(a=>({name:a.name, bal:liabilityBalance(a.name), subtitle:a.subtitle}));
   const netGst = netGSTPayable('all');
   if(netGst>0) rawLiabilities.push({name:'GST Payable (net, to date)', bal:netGst, subtitle:'GST Payable'});
@@ -4043,7 +4092,13 @@ function exportExcel(){
   }
   const bsRows = [];
   state.accounts.asset.forEach(a=>{ const b=assetBalance(a.name); if(isNonZero(b)) bsRows.push({Category:(a.subtitle||'Other'), Account:a.name, Balance:b}); });
-  if(state.inventoryItems.length && isNonZero(inventoryValue())) bsRows.push({Category:'Inventory / Stock-in-Trade', Account:'Inventory (at cost)', Balance:inventoryValue()});
+  if(state.inventoryItems.length){
+    const invByTypeXl = {};
+    state.inventoryItems.forEach(i=>{ const type=(i.type||'').trim()||'Other'; invByTypeXl[type] = round2((invByTypeXl[type]||0) + itemValue(i)); });
+    Object.entries(invByTypeXl).forEach(([type,val])=>{
+      if(isNonZero(val)) bsRows.push({Category:'Inventory / Stock-in-Trade', Account: Object.keys(invByTypeXl).length>1 ? `Inventory — ${type}` : 'Inventory (at cost)', Balance:val});
+    });
+  }
   state.accounts.liability.forEach(a=>{ const b=liabilityBalance(a.name); if(isNonZero(b)) bsRows.push({Category:(a.subtitle||'Other'), Account:a.name, Balance:b}); });
   state.accounts.equity.forEach(a=>{ const b=equityBalance(a.name); if(isNonZero(b)) bsRows.push({Category:(a.subtitle||'Capital & Reserves'), Account:a.name, Balance:b}); });
   if(isNonZero(netProfit('all'))) bsRows.push({Category:'Capital & Reserves', Account:'Retained Earnings (net profit to date)', Balance:netProfit('all')});
