@@ -248,6 +248,10 @@ const DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive.file';
 
 /* ============================= DATA LAYER ============================= */
 const STORAGE_KEY = 'accounts_book_v2_digital_printing';
+/* Deliberately NOT part of `state` — this timestamp describes this one browser's own sync history,
+   not the business's data, so it must never travel to Drive or get overwritten by another device's
+   sync. Local-only, same as the app's own settled convention for device-specific facts. */
+const LAST_SYNCED_KEY = 'accounts_last_synced_at';
 const RECEIVABLE_ACCOUNT = 'Accounts Receivable (Pending)';
 const PAYABLE_ACCOUNT = 'Accounts Payable (Pending)';
 const CREDIT_NOTE_CATEGORY = 'Sales Returns / Credit Notes';
@@ -443,7 +447,58 @@ function storageUsedBytes(){
    copy (local vs Drive) was saved more recently wins when the app opens, so an offline device never
    silently overwrites newer work done elsewhere. */
 let gDriveReady = false, gDriveFileId = null, gAccessToken = null, gTokenClient = null, gDriveSaveTimer = null;
-function driveStatus(msg){ const el = document.getElementById('driveStatus'); if(el) el.textContent = msg; }
+let dashSyncInterval = null;
+function driveStatus(msg){ const el = document.getElementById('driveStatus'); if(el) el.textContent = msg; updateDashSyncUI(); }
+function markSynced(){
+  try{ localStorage.setItem(LAST_SYNCED_KEY, String(Date.now())); }catch(e){}
+  updateDashSyncUI();
+}
+function getLastSyncedAt(){
+  try{ const v = localStorage.getItem(LAST_SYNCED_KEY); return v?Number(v):null; }catch(e){ return null; }
+}
+function formatSyncAge(ts){
+  const mins = Math.floor((Date.now()-ts)/60000);
+  if(mins<1) return 'just now';
+  if(mins<60) return `${mins} minute${mins===1?'':'s'} ago`;
+  const hrs = Math.floor(mins/60);
+  if(hrs<24) return `${hrs} hour${hrs===1?'':'s'} ago`;
+  const days = Math.floor(hrs/24);
+  return `${days} day${days===1?'':'s'} ago`;
+}
+/* Updates the Dashboard's sync status card directly by id, without a full render() — sync events
+   (a debounced save, a sign-in) shouldn't force a re-render of whatever tab the person is actually
+   on. A no-op whenever the Dashboard isn't the active tab, since the elements simply won't exist. */
+function updateDashSyncUI(){
+  const dot = document.getElementById('dashSyncDot');
+  const line = document.getElementById('dashSyncLine');
+  const sub = document.getElementById('dashSyncSub');
+  if(!dot || !line || !sub) return;
+  const last = getLastSyncedAt();
+  let color = '#837FA0', text = 'Not connected to Google Drive', subtext = 'Sign in from the sidebar to enable sync.';
+  if(navigator.onLine===false){
+    color = '#A32D2D'; text = "You're offline";
+    subtext = last ? `Last synced ${formatSyncAge(last)} — will retry once you're back online.` : "Will sync once you're back online.";
+  } else if(gDriveReady){
+    if(!last){ color = '#BA7517'; text = 'Not synced yet'; subtext = 'Make an entry to start syncing.'; }
+    else {
+      const mins = Math.floor((Date.now()-last)/60000);
+      color = mins<30 ? '#3B6D11' : (mins<180 ? '#BA7517' : '#A32D2D');
+      text = `Last synced ${formatSyncAge(last)}`;
+      subtext = new Date(last).toLocaleString('en-IN',{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'}) + ' · this device';
+    }
+  }
+  dot.style.background = color;
+  line.textContent = text;
+  sub.textContent = subtext;
+}
+function syncNow(){
+  if(!gDriveReady || !gDriveFileId){ driveSignIn(); return; }
+  clearTimeout(gDriveSaveTimer);
+  driveStatus('saving…');
+  syncMerge()
+    .then(()=>{ markSynced(); driveStatus('synced just now'); render(); })
+    .catch(()=>{ driveStatus('could not sync — check your connection'); });
+}
 function initGoogleAuth(){
   if(GOOGLE_CLIENT_ID.indexOf('PASTE_YOUR_CLIENT_ID_HERE')===0){
     driveStatus('not set up yet');
@@ -509,13 +564,10 @@ async function onDriveSignedIn(){
   try{
     const folderId = await findOrCreateFolder();
     gDriveFileId = await findOrCreateFile(folderId);
-    const remote = await driveDownload(gDriveFileId);
-    if(remote && remote.categories){
-      const remoteTime = remote.lastModified||0, localTime = state.lastModified||0;
-      if(remoteTime >= localTime){ state = remote; try{ localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }catch(e){} }
-    }
+    await syncMerge();
     gDriveReady = true;
     if(gate) gate.style.display = 'none';
+    markSynced();
     driveStatus('synced just now');
     render();
   }catch(err){
@@ -528,12 +580,62 @@ function scheduleDriveSave(){
   clearTimeout(gDriveSaveTimer);
   driveStatus('saving…');
   gDriveSaveTimer = setTimeout(async ()=>{
-    try{ await driveUpload(gDriveFileId, state); driveStatus('synced just now'); }
+    try{ await syncMerge(); markSynced(); driveStatus('synced just now'); }
     catch(e){ driveStatus('could not sync — check your connection'); }
   }, 1200);
 }
 
-function driveSignOut(){   if(gAccessToken && window.google){ google.accounts.oauth2.revoke(gAccessToken, ()=>{}); }   gAccessToken = null; gDriveReady = false; gDriveFileId = null;   driveStatus('signed out');   const gate = document.getElementById('signinGate');   if(gate) gate.style.display = 'flex'; } function uid(){ return state.nextId++; }
+function driveSignOut(){   if(gAccessToken && window.google){ google.accounts.oauth2.revoke(gAccessToken, ()=>{}); }   gAccessToken = null; gDriveReady = false; gDriveFileId = null;   driveStatus('signed out');   const gate = document.getElementById('signinGate');   if(gate) gate.style.display = 'flex'; } /* Was a simple incrementing counter (state.nextId++), which works fine for one device but breaks the
+   moment two devices create records offline at the same time — both start counting from the same
+   base and generate colliding ids for entirely different records. A merge can't tell those apart. This
+   combines the current time with a random suffix, so ids stay unique across devices without needing
+   any coordination between them. state.nextId is left in place, unused, rather than removed — no
+   other code reads it, so there's nothing to gain by touching it, and no reason to risk breaking
+   whatever might. */
+/* Combines two record arrays (each item has its own unique .id) into one, keeping every record that
+   exists in either array. When the same id exists in both — an edit made after the two devices' last
+   common sync point — the LOCAL version wins: on the device doing the merging, whatever's already
+   in front of the person is trusted over a same-id record arriving from elsewhere. This can't
+   reconcile two genuinely different edits to the very same entry made offline on two devices at once
+   (still an unresolved case) — but a record that's simply new on one side is never dropped, which is
+   the actual failure mode reported: whole entries vanishing after a sync. */
+function unionById(remoteArr, localArr){
+  const map = new Map();
+  (remoteArr||[]).forEach(r=> map.set(String(r.id), r));
+  (localArr||[]).forEach(l=> map.set(String(l.id), l));
+  return Array.from(map.values());
+}
+/* Everything EXCEPT the record lists below still follows the old rule — whichever whole snapshot has
+   the newer lastModified wins outright. That includes inventory quantities/cost: they're running
+   balances mutated in place (weighted-average costing), not simply derived from the movement log, so
+   safely reconciling them after a merge would mean replaying every movement from scratch — a bigger,
+   riskier change than this pass. Flagged clearly rather than silently attempted. */
+function mergeRemoteIntoLocal(remote, local){
+  if(!remote || !remote.categories) return local;
+  const remoteTime = remote.lastModified||0, localTime = local.lastModified||0;
+  const base = remoteTime >= localTime ? remote : local;
+  const merged = Object.assign({}, base);
+  merged.transactions = unionById(remote.transactions, local.transactions);
+  merged.inventoryMovements = unionById(remote.inventoryMovements, local.inventoryMovements);
+  merged.clients = unionById(remote.clients, local.clients);
+  merged.vendors = unionById(remote.vendors, local.vendors);
+  merged.lastModified = Date.now();
+  return merged;
+}
+/* Shared by sign-in, every debounced auto-save, and the manual Sync now button: downloads whatever's
+   currently on Drive, merges it against local state (see mergeRemoteIntoLocal above), saves the
+   result locally, writes it back to Drive so both sides end up identical, and lets the person know
+   when entries came in from elsewhere. Returns true on success so callers can decide what to do next. */
+async function syncMerge(){
+  const remote = await driveDownload(gDriveFileId);
+  const beforeCount = state.transactions.length;
+  const merged = mergeRemoteIntoLocal(remote, state);
+  state = merged;
+  try{ localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }catch(e){}
+  const added = state.transactions.length - beforeCount;
+  if(added>0) toast(`Synced in ${added} ${added===1?'entry':'entries'} from another device — check Recent Entries.`);
+  await driveUpload(gDriveFileId, state);
+}
 function todayISO(){ return new Date().toISOString().slice(0,10); }
 function fmt(n){ n = Number(n)||0; return n.toLocaleString('en-IN', {maximumFractionDigits:2, minimumFractionDigits: Number.isInteger(n)?0:2}); }
 function money(n){ return state.currency + fmt(n); }
@@ -1723,13 +1825,10 @@ function renderDashboard(main){
   const todayTx = state.transactions.filter(t=>isToday(t.date));
   const todayIn = todayTx.filter(t=>t.flow==='in').reduce((s,t)=>s+txTotal(t),0);
   const todayOut = todayTx.filter(t=>t.flow==='out').reduce((s,t)=>s+txTotal(t),0);
-  // Cash In Hand and HDFC Bank get their own dashboard cards; every other cash/bank account is grouped
-  // into one combined card, with each account's name listed underneath it.
-  const PINNED_CASH_ACCOUNTS = ['Cash In Hand', 'HDFC Bank'];
   const cashInHandBal = assetBalance('Cash In Hand');
   const hdfcBankBal = assetBalance('HDFC Bank');
-  const otherCashAccounts = cashBankAccounts().filter(a=>!PINNED_CASH_ACCOUNTS.includes(a.name));
-  const otherCashTotal = otherCashAccounts.reduce((s,a)=>s+assetBalance(a.name),0);
+
+  clearInterval(dashSyncInterval);
 
   main.innerHTML = `
     <div class="topbar">
@@ -1743,8 +1842,17 @@ function renderDashboard(main){
       <div class="card"><div class="label">Today · In / Out</div><div class="value num">${money(todayIn)} <span class="muted" style="font-size:15px;">/ ${money(todayOut)}</span></div><div class="foot">${todayTx.length} entries logged today</div></div>
       <div class="card ${cashInHandBal<0?'bad':''}"><div class="label">Cash In Hand</div><div class="value num">${money(cashInHandBal)}</div><div class="foot">Excludes pending receivables</div></div>
       <div class="card ${hdfcBankBal<0?'bad':''}"><div class="label">HDFC Bank</div><div class="value num">${money(hdfcBankBal)}</div><div class="foot">Excludes pending receivables</div></div>
-      <div class="card ${otherCashTotal<0?'bad':''}"><div class="label">Other accounts</div><div class="value num">${money(otherCashTotal)}</div><div class="foot">${otherCashAccounts.length ? otherCashAccounts.map(a=>a.name).join(', ') : 'No other cash/bank accounts'}</div></div>
       <div class="card amber"><div class="label">Inventory value</div><div class="value num">${money(inventoryValue())}</div><div class="foot">${state.inventoryItems.length} item(s) · ${inventoryUnits()} unit(s) on hand</div></div>
+      <div class="card" id="dashSyncCard" style="grid-column:span 2;">
+        <div class="row" style="justify-content:space-between; align-items:flex-start;">
+          <div>
+            <div class="label" style="display:flex; align-items:center; gap:6px;"><span id="dashSyncDot" style="width:8px; height:8px; border-radius:50%; background:#837FA0; display:inline-block;"></span>Google Drive sync</div>
+            <div id="dashSyncLine" style="font-weight:700; margin-top:4px;">Checking…</div>
+            <div id="dashSyncSub" class="foot" style="margin-top:2px;"></div>
+          </div>
+          <button class="btn ghost small" onclick="syncNow()">Sync now</button>
+        </div>
+      </div>
     </div>
     <div class="two-col">
       <div class="panel">
@@ -1762,6 +1870,19 @@ function renderDashboard(main){
       </div>
     </div>
   `;
+  updateDashSyncUI();
+  dashSyncInterval = setInterval(updateDashSyncUI, 30000);
+}
+/* Sales/Purchases no longer have a Category to show here (removed along with the Category field —
+   see itemTypeOf above), so their label is built from what was actually on the invoice instead: the
+   item names, plus the party if one was picked. Income/Expense entries still show their Category,
+   unaffected. */
+function recentLabel(t){
+  if(t.kind!=='sale' && t.kind!=='purchase') return t.category;
+  const names = txItems(t).map(l=>l.name).filter(Boolean);
+  const summary = names.length ? (names.length>2 ? `${names.slice(0,2).join(', ')} +${names.length-2} more` : names.join(', ')) : (t.kind==='sale'?'Sale':'Purchase');
+  const party = findParty(t.kind, t.partyId);
+  return `${t.kind==='sale'?'Sale':'Purchase'} — ${summary}${party?` (${party.name})`:''}`;
 }
 function renderRecent(){
   const rows = [...state.transactions].sort(byDateThenNewestFirst).slice(0,10);
@@ -1773,7 +1894,7 @@ function renderRecent(){
       <td class="num" style="width:110px;"><span class="pill">⇄${money(t.amount)}</span></td></tr>`;
     }
     return `<tr><td class="muted" style="width:80px;">${dispDate(t.date)}</td>
-    <td>${t.category}${t.description? ' — '+t.description : ''}</td>
+    <td>${recentLabel(t)}${t.description? ' — '+t.description : ''}</td>
     <td class="num" style="width:110px;"><span class="pill ${t.flow}">${t.flow==='in'?'+':'−'}${money(txTotal(t))}</span></td></tr>`;
   }).join('')}</tbody></table>`;
 }
