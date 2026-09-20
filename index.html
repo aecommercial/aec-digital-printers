@@ -383,6 +383,10 @@ function seedState(){
     clients: [],
     vendors: [],
     nextId: 1,
+    // Ids of deleted records, kept only so a sync merge (see mergeRemoteIntoLocal) knows a record
+    // that's missing locally was deliberately removed, not just "not created yet" on this device.
+    // Without this, unionById treats every gap as something to pull back in — including deletions.
+    tombstones: { transactions:[], inventoryMovements:[], clients:[], vendors:[] },
     onboarded:false,
     theme: { preset:'Lavender', colors:null },
     fontChoice: { preset:'Inter', customName:'', customDataUrl:'', customFormat:'' }
@@ -593,47 +597,69 @@ function driveSignOut(){   if(gAccessToken && window.google){ google.accounts.oa
    other code reads it, so there's nothing to gain by touching it, and no reason to risk breaking
    whatever might. */
 /* Combines two record arrays (each item has its own unique .id) into one, keeping every record that
-   exists in either array. When the same id exists in both — an edit made after the two devices' last
-   common sync point — the LOCAL version wins: on the device doing the merging, whatever's already
-   in front of the person is trusted over a same-id record arriving from elsewhere. This can't
-   reconcile two genuinely different edits to the very same entry made offline on two devices at once
-   (still an unresolved case) — but a record that's simply new on one side is never dropped, which is
-   the actual failure mode reported: whole entries vanishing after a sync. */
-function unionById(remoteArr, localArr){
+   exists in either array and isn't in deletedIds. When the same id exists in both — an edit made
+   after the two devices' last common sync point — the LOCAL version wins: on the device doing the
+   merging, whatever's already in front of the person is trusted over a same-id record arriving from
+   elsewhere. This can't reconcile two genuinely different edits to the very same entry made offline
+   on two devices at once (still an unresolved case) — but a record that's simply new on one side is
+   never dropped, which is the actual failure mode reported: whole entries vanishing after a sync. */
+function unionById(remoteArr, localArr, deletedIds){
+  const deleted = new Set((deletedIds||[]).map(String));
   const map = new Map();
-  (remoteArr||[]).forEach(r=> map.set(String(r.id), r));
-  (localArr||[]).forEach(l=> map.set(String(l.id), l));
+  (remoteArr||[]).forEach(r=>{ if(!deleted.has(String(r.id))) map.set(String(r.id), r); });
+  (localArr||[]).forEach(l=>{ if(!deleted.has(String(l.id))) map.set(String(l.id), l); });
   return Array.from(map.values());
 }
-/* Everything EXCEPT the record lists below still follows the old rule — whichever whole snapshot has
-   the newer lastModified wins outright. That includes inventory quantities/cost: they're running
-   balances mutated in place (weighted-average costing), not simply derived from the movement log, so
-   safely reconciling them after a merge would mean replaying every movement from scratch — a bigger,
-   riskier change than this pass. Flagged clearly rather than silently attempted. */
+/* Deleting a record removes it from its array, but that alone isn't enough once two devices sync:
+   the very next merge would see the id missing locally, assume it just hasn't been created here yet,
+   and pull it back in from the other device's copy — resurrecting a deletion. Tombstones are how a
+   deletion travels through a sync as a deliberate fact rather than an absence: every deleted id is
+   kept (see deleteTransaction and the client/vendor/movement delete handlers), the two devices'
+   tombstone lists are unioned here so a deletion made on either one reaches the other, and unionById
+   above excludes anything tombstoned before it can be resurrected. */
+function mergeTombstones(remoteIds, localIds){
+  return Array.from(new Set([...(remoteIds||[]), ...(localIds||[])].map(String)));
+}
+const EMPTY_TOMBSTONES = { transactions:[], inventoryMovements:[], clients:[], vendors:[] };
+/* Everything EXCEPT the record lists below (and their tombstones) still follows the old rule —
+   whichever whole snapshot has the newer lastModified wins outright. That includes inventory
+   quantities/cost: they're running balances mutated in place (weighted-average costing), not simply
+   derived from the movement log, so safely reconciling them after a merge would mean replaying every
+   movement from scratch — a bigger, riskier change than this pass. Flagged clearly rather than
+   silently attempted. */
 function mergeRemoteIntoLocal(remote, local){
   if(!remote || !remote.categories) return local;
   const remoteTime = remote.lastModified||0, localTime = local.lastModified||0;
   const base = remoteTime >= localTime ? remote : local;
   const merged = Object.assign({}, base);
-  merged.transactions = unionById(remote.transactions, local.transactions);
-  merged.inventoryMovements = unionById(remote.inventoryMovements, local.inventoryMovements);
-  merged.clients = unionById(remote.clients, local.clients);
-  merged.vendors = unionById(remote.vendors, local.vendors);
+  const rt = remote.tombstones || EMPTY_TOMBSTONES, lt = local.tombstones || EMPTY_TOMBSTONES;
+  const tombstones = {
+    transactions: mergeTombstones(rt.transactions, lt.transactions),
+    inventoryMovements: mergeTombstones(rt.inventoryMovements, lt.inventoryMovements),
+    clients: mergeTombstones(rt.clients, lt.clients),
+    vendors: mergeTombstones(rt.vendors, lt.vendors)
+  };
+  merged.tombstones = tombstones;
+  merged.transactions = unionById(remote.transactions, local.transactions, tombstones.transactions);
+  merged.inventoryMovements = unionById(remote.inventoryMovements, local.inventoryMovements, tombstones.inventoryMovements);
+  merged.clients = unionById(remote.clients, local.clients, tombstones.clients);
+  merged.vendors = unionById(remote.vendors, local.vendors, tombstones.vendors);
   merged.lastModified = Date.now();
   return merged;
 }
 /* Shared by sign-in, every debounced auto-save, and the manual Sync now button: downloads whatever's
    currently on Drive, merges it against local state (see mergeRemoteIntoLocal above), saves the
    result locally, writes it back to Drive so both sides end up identical, and lets the person know
-   when entries came in from elsewhere. Returns true on success so callers can decide what to do next. */
+   when entries came in from — or were removed by a deletion on — another device. */
 async function syncMerge(){
   const remote = await driveDownload(gDriveFileId);
   const beforeCount = state.transactions.length;
   const merged = mergeRemoteIntoLocal(remote, state);
   state = merged;
   try{ localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }catch(e){}
-  const added = state.transactions.length - beforeCount;
-  if(added>0) toast(`Synced in ${added} ${added===1?'entry':'entries'} from another device — check Recent Entries.`);
+  const diff = state.transactions.length - beforeCount;
+  if(diff>0) toast(`Synced in ${diff} ${diff===1?'entry':'entries'} from another device — check Recent Entries.`);
+  else if(diff<0) toast(`${-diff} ${-diff===1?'entry was':'entries were'} deleted on another device and removed here too.`);
   await driveUpload(gDriveFileId, state);
 }
 function todayISO(){ return new Date().toISOString().slice(0,10); }
@@ -1786,6 +1812,7 @@ function goTab(tab){ activeTab=tab; editingTxId=null; editingItemId=null; [...na
    several earlier versions of this file always has safe defaults for these, however it got here,
    instead of a missing field throwing partway through a render and leaving that tab blank. */
 function ensureNewFieldDefaults(){
+  if(!state.tombstones) state.tombstones = { transactions:[], inventoryMovements:[], clients:[], vendors:[] };
   if(!state.categories) state.categories = {income:[], expense:[]};
   if(!state.categories.salesDiscount) state.categories.salesDiscount = ['Sales Discount'];
   if(!state.categories.purchaseDiscount) state.categories.purchaseDiscount = ['Purchase Discount'];
@@ -1995,7 +2022,12 @@ function deleteTransaction(id){
       else weightedAvgReverseIn(item, line.qty, line.rate);
     }
   });
-  if(lines.length) state.inventoryMovements = state.inventoryMovements.filter(m=>m.txId!=t.id);
+  if(lines.length){
+    const removedMovementIds = state.inventoryMovements.filter(m=>m.txId==t.id).map(m=>m.id);
+    state.tombstones.inventoryMovements.push(...removedMovementIds);
+    state.inventoryMovements = state.inventoryMovements.filter(m=>m.txId!=t.id);
+  }
+  state.tombstones.transactions.push(t.id);
   state.transactions = state.transactions.filter(x=>x.id!=id);
   save(); toast('Entry deleted.');
 }
@@ -3234,6 +3266,7 @@ function renderInventory(main){
         else if(m.type==='out') item.qty += m.qty;
         else item.qty -= m.qty;
       }
+      state.tombstones.inventoryMovements.push(m.id);
       state.inventoryMovements = state.inventoryMovements.filter(x=>x.id!=id);
       save(); toast('Movement deleted.'); render();
     });
@@ -4765,8 +4798,8 @@ function renderSettings(main){
       const [kind, id] = rmBtn.dataset.rmparty.split('::');
       const used = state.transactions.some(t=>t.partyId==id);
       if(used){ toast(`Can't remove — this ${kind} is used on existing entries.`); return; }
-      if(kind==='client') state.clients = state.clients.filter(p=>p.id!=id);
-      else state.vendors = state.vendors.filter(p=>p.id!=id);
+      if(kind==='client'){ state.tombstones.clients.push(id); state.clients = state.clients.filter(p=>p.id!=id); }
+      else { state.tombstones.vendors.push(id); state.vendors = state.vendors.filter(p=>p.id!=id); }
       save(); drawPartyChips(kind, kind==='client'?'clientChips':'vendorChips'); toast(`${kind==='client'?'Client':'Vendor'} removed.`);
     }
   });
