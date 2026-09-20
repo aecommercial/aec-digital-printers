@@ -596,6 +596,7 @@ function driveSignOut(){   if(gAccessToken && window.google){ google.accounts.oa
    any coordination between them. state.nextId is left in place, unused, rather than removed — no
    other code reads it, so there's nothing to gain by touching it, and no reason to risk breaking
    whatever might. */
+function uid(){ return Date.now().toString(36)+'-'+Math.random().toString(36).slice(2,8); }
 /* Combines two record arrays (each item has its own unique .id) into one, keeping every record that
    exists in either array and isn't in deletedIds. When the same id exists in both — an edit made
    after the two devices' last common sync point — the LOCAL version wins: on the device doing the
