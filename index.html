@@ -3445,6 +3445,64 @@ function computeLedgerResultHtml(selValue){
   return `<div class="empty">Unknown selection.</div>`;
 }
 
+/* Reuses the invoice's own letterhead — same .inv-modal overlay, same A4 .inv-sheet page, same navy/tan
+   color scheme and GST/PAN/address/bank footer block pulled from state.invoiceSettings — so a printed
+   ledger statement looks like it belongs to the same stationery as an invoice, not a different document
+   style. The body swaps in computeLedgerResultHtml's own table instead of invoice line items/totals. */
+function printLedger(selValue){
+  if(!selValue) return;
+  const inv = state.invoiceSettings;
+  const ledgerSelectEl = document.getElementById('ledgerSelect');
+  const title = ledgerSelectEl.options[ledgerSelectEl.selectedIndex].text;
+  const bodyHtml = computeLedgerResultHtml(selValue);
+
+  const headerBlock = `
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;padding-bottom:14px;border-bottom:2px solid #162660;">
+        <div>
+          <div style="font-weight:700;font-size:30px;">${brandNameHtml(inv.businessLegalName)}</div>
+          ${inv.tagline ? `<div style="font-size:15px;color:#8a5a3a;margin-top:4px;">${inv.tagline}</div>` : ''}
+        </div>
+        <div style="text-align:right;font-weight:700;font-size:20px;letter-spacing:.05em;color:#162660;padding-top:3px;">LEDGER STATEMENT</div>
+      </div>
+      <div style="display:flex;justify-content:space-between;gap:20px;padding:18px 0;border-bottom:0.5px solid #e8d2c0;font-size:15px;">
+        <div>
+          <div style="font-size:18px;color:#8a5a3a;text-transform:uppercase;letter-spacing:.04em;margin-bottom:4px;">Statement Of</div>
+          <div style="font-weight:700;">${title}</div>
+        </div>
+        <div style="text-align:right;">
+          <div style="font-size:18px;color:#8a5a3a;text-transform:uppercase;letter-spacing:.04em;margin-bottom:4px;">Period</div>
+          <div>${rangeLabel(reportRange)}</div>
+          <div style="font-size:12px;color:#8a5a3a;margin-top:4px;">Generated ${dispDate(todayISO())}</div>
+        </div>
+      </div>`;
+
+  const footerBlock = `
+      <div style="text-align:center;font-size:15px;margin-top:16px;border-top:2px solid #162660;padding-top:8px;color:#8a5a3a;">
+        GST No. ${inv.gstin} &nbsp;&nbsp; PAN No. ${inv.pan}<br>
+        Address: ${inv.address} Mobile No.: ${inv.mobile}, Email ${inv.email}
+      </div>`;
+
+  const html = `
+    <div class="inv-actions">
+      <button class="btn ghost" id="invCloseBtn">✕ Close</button>
+      <button class="btn primary" id="invPrintBtn">🖨 Print / Save as PDF</button>
+    </div>
+    <div class="inv-pages">
+      <div class="inv-sheet inv-sheet--col">
+        <div>${headerBlock}</div>
+        <div style="padding:18px 0;font-size:14px;">${bodyHtml}</div>
+        <div class="inv-spacer"></div>
+        <div>${footerBlock}</div>
+      </div>
+    </div>
+  `;
+  let modal = document.getElementById('invoiceModal');
+  if(!modal){ modal = document.createElement('div'); modal.id='invoiceModal'; modal.className='inv-modal'; document.body.appendChild(modal); }
+  modal.innerHTML = html;
+  modal.style.display = 'flex';
+  document.getElementById('invCloseBtn').addEventListener('click', ()=>{ modal.style.display='none'; });
+  document.getElementById('invPrintBtn').addEventListener('click', ()=> window.print());
+}
 function accountLedger(name){
   const acc = findAcc('asset', name);
   const opening = acc ? (Number(acc.opening)||0) : 0;
@@ -3769,10 +3827,11 @@ function renderReports(main){
     <details class="panel report-collapse">
       <summary><h2>Ledger <span class="tag">${rangeLabel(reportRange)} · pick any title</span></h2></summary>
       <div class="report-collapse-body">
-        <div class="inline" style="margin-bottom:14px;">
+        <div class="inline" style="margin-bottom:14px; align-items:flex-end;">
           <div><label>Select a title</label>
             <select id="ledgerSelect"><option value="">— choose —</option>${ledgerGroupOptionsHtml()}</select>
           </div>
+          <button class="btn ghost" id="ledgerPrintBtn" disabled>🖨 Print / Save as PDF</button>
         </div>
         <div id="ledgerResult"><div class="empty">Choose a title above to see its entries.</div></div>
       </div>
@@ -3782,9 +3841,12 @@ function renderReports(main){
     </div>
   `;
   const ledgerSelectEl = document.getElementById('ledgerSelect');
+  const ledgerPrintBtnEl = document.getElementById('ledgerPrintBtn');
   if(ledgerSelectEl) ledgerSelectEl.addEventListener('change', ()=>{
     document.getElementById('ledgerResult').innerHTML = computeLedgerResultHtml(ledgerSelectEl.value);
+    if(ledgerPrintBtnEl) ledgerPrintBtnEl.disabled = !ledgerSelectEl.value;
   });
+  if(ledgerPrintBtnEl) ledgerPrintBtnEl.addEventListener('click', ()=> printLedger(ledgerSelectEl.value));
   document.getElementById('rangeTabs').addEventListener('click', e=>{
     const b = e.target.closest('button[data-r]'); if(!b) return;
     reportRange = b.dataset.r; render();
