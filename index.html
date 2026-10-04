@@ -48,6 +48,9 @@
   nav button .ico{ width:16px; text-align:center; font-size:14px;}
   nav button:hover{ background:#232C50; color:#F4F2E9;}
   nav button.active{ background:var(--accent); color:#fff; font-weight:700;}
+  nav button.locked-tab{ color:#6B7190;}
+  nav button.locked-tab.active{ background:#4A5078; color:#D9DCEA;}
+  .lock-badge{ font-size:11px;}
   .side-foot{ font-size:10.5px; color:#7C84A3; line-height:1.5; padding-top:14px; border-top:1px solid #2B3457;}
 
   main{ flex:1; padding:28px 34px 60px; max-width:1180px;}
@@ -389,7 +392,11 @@ function seedState(){
     tombstones: { transactions:[], inventoryMovements:[], clients:[], vendors:[] },
     onboarded:false,
     theme: { preset:'Lavender', colors:null },
-    fontChoice: { preset:'Inter', customName:'', customDataUrl:'', customFormat:'' }
+    fontChoice: { preset:'Inter', customName:'', customDataUrl:'', customFormat:'' },
+    // Brand-new installs start on the cheapest tier and get a fresh App ID right away so
+    // Settings → Plan has something to show from the very first screen.
+    tier: 'inventory',
+    appId: genAppId()
   };
 }
 let state = load();
@@ -597,6 +604,57 @@ function driveSignOut(){   if(gAccessToken && window.google){ google.accounts.oa
    other code reads it, so there's nothing to gain by touching it, and no reason to risk breaking
    whatever might. */
 function uid(){ return Date.now().toString(36)+'-'+Math.random().toString(36).slice(2,8); }
+
+/* ============================= LICENSING / TIER GATING =============================
+   Three sellable tiers, cheapest to priciest. Every tab in the nav is pinned to the lowest
+   tier that's allowed to open it. A fresh install starts on the lowest tier (Inventory); an
+   upgrade code (entered in Settings → Plan) raises state.tier permanently for this install.
+   There's no server — this is a soft, offline deterrent (a shared-secret checksum), not real
+   DRM — so a determined buyer could bypass it, but it stops an ordinary customer from just
+   editing localStorage to unlock features they didn't pay for. */
+const TIER_RANK = { inventory:1, salesPurchase:2, complete:3 };
+const TIER_LABELS = { inventory:'Inventory', salesPurchase:'Sales & Purchase', complete:'Complete' };
+const TIER_ORDER = ['inventory','salesPurchase','complete'];
+const TAB_MIN_TIER = {
+  dashboard:'inventory', inventory:'inventory', settings:'inventory',
+  cashflow:'salesPurchase', sales:'salesPurchase', purchases:'salesPurchase', reconcile:'salesPurchase',
+  general:'complete', reports:'complete'
+};
+function tabLocked(tab){
+  const min = TAB_MIN_TIER[tab] || 'inventory';
+  const have = TIER_RANK[state.tier || 'complete'] || 3;
+  return have < TIER_RANK[min];
+}
+/* A readable per-install identifier — not secret itself (it's shown plainly in Settings so the
+   buyer can send it to Huzefa), but combined with APP_SECRET below it's what makes the upgrade
+   code for one install useless on another. */
+function genAppId(){
+  const part = ()=>Math.random().toString(36).slice(2,6).toUpperCase();
+  return 'AEC-'+part()+'-'+part()+'-'+part();
+}
+/* Baked into this file AND into the separate offline codegen tool Huzefa keeps for himself —
+   never shown to the customer. A fast, deterministic, non-cryptographic string hash (good enough
+   for a soft unlock code, not meant to resist serious attack). Returns an unsigned 53-bit number. */
+const APP_SECRET = 'AEC-BIZBOOKS-2026-K7Q';
+function licenseHash(str){
+  let h1 = 0xdeadbeef ^ 0, h2 = 0x41c6ce57 ^ 0;
+  for(let i=0;i<str.length;i++){
+    const ch = str.charCodeAt(i);
+    h1 = Math.imul(h1 ^ ch, 2654435761);
+    h2 = Math.imul(h2 ^ ch, 1597334677);
+  }
+  h1 = Math.imul(h1 ^ (h1>>>16), 2246822507) ^ Math.imul(h2 ^ (h2>>>13), 3266489909);
+  h2 = Math.imul(h2 ^ (h2>>>16), 2246822507) ^ Math.imul(h1 ^ (h1>>>13), 3266489909);
+  return 4294967296 * (2097151 & h2) + (h1>>>0);
+}
+/* The code a customer types into Settings → Plan to unlock a given tier on their own App ID.
+   Deterministic from (secret, appId, tier) — so Huzefa can hand-generate it offline with the
+   matching codegen tool, no server or internet round-trip needed at either end. */
+function computeUpgradeCode(appId, tier){
+  const raw = licenseHash(APP_SECRET+'|'+(appId||'').toUpperCase().trim()+'|'+tier).toString(36).toUpperCase();
+  const code = raw.padStart(10,'0').slice(0,10);
+  return code.slice(0,5)+'-'+code.slice(5,10);
+}
 /* Combines two record arrays (each item has its own unique .id) into one, keeping every record that
    exists in either array and isn't in deletedIds. When the same id exists in both — an edit made
    after the two devices' last common sync point — the LOCAL version wins: on the device doing the
@@ -1827,15 +1885,48 @@ function ensureNewFieldDefaults(){
   if(!state.categorySubtitles.expense) state.categorySubtitles.expense = {};
   if(!state.theme) state.theme = { preset:'Lavender', colors:null };
   if(!state.fontChoice) state.fontChoice = { preset:'Inter', customName:'', customDataUrl:'', customFormat:'' };
+  /* Tier gating is new. Any save that predates this feature has no state.tier at all — that
+     includes every install already in someone's hands, Huzefa's own working copy among them.
+     Those get grandfathered straight to 'complete' so nothing they already had access to
+     suddenly locks on them; only a genuinely fresh install (seeded with tier:'inventory' above)
+     starts gated. appId is likewise generated once, the first time it's missing, and then kept. */
+  if(!state.tier) state.tier = 'complete';
+  if(!state.appId) state.appId = genAppId();
   (state.accounts.asset||[]).forEach(a=>{ if(a.subtitle===undefined) a.subtitle = a.type==='fixed' ? 'Fixed Assets' : 'Current Assets'; });
   (state.accounts.liability||[]).forEach(a=>{ if(a.subtitle===undefined) a.subtitle = a.type==='longterm' ? 'Long-term Liabilities' : 'Current Liabilities'; });
   (state.accounts.equity||[]).forEach(a=>{ if(a.subtitle===undefined) a.subtitle = 'Capital & Reserves'; });
 }
+/* Greys out any nav button whose tab the current tier can't open yet and drops a small lock
+   badge on it, so the limit is visible from the nav itself rather than a surprise on click. */
+function updateNavLockBadges(){
+  [...nav.querySelectorAll('button[data-tab]')].forEach(b=>{
+    const locked = tabLocked(b.dataset.tab);
+    b.classList.toggle('locked-tab', locked);
+    let badge = b.querySelector('.lock-badge');
+    if(locked && !badge){ b.insertAdjacentHTML('beforeend', '<span class="lock-badge" style="margin-left:4px;opacity:.7;">🔒</span>'); }
+    else if(!locked && badge){ badge.remove(); }
+  });
+}
+function renderLockedTab(main, tab){
+  const min = TAB_MIN_TIER[tab] || 'inventory';
+  main.innerHTML = `
+    <div class="topbar"><div><h1 class="disp">🔒 Locked</h1><div class="sub">This section needs a higher plan.</div></div></div>
+    <div class="card" style="max-width:540px;">
+      <div class="label">Your current plan</div>
+      <div class="value" style="font-size:20px;">${TIER_LABELS[state.tier||'inventory']}</div>
+      <p style="margin-top:14px;color:var(--muted);">This section is part of the <b>${TIER_LABELS[min]}</b> plan. Head to <b>Settings → Plan &amp; upgrade</b> and enter an upgrade code to unlock it — or get in touch to purchase one.</p>
+      <div class="row" style="margin-top:14px;"><button class="btn primary" id="lockedGoSettingsBtn">Go to Settings</button></div>
+    </div>`;
+  const btn = document.getElementById('lockedGoSettingsBtn');
+  if(btn) btn.addEventListener('click', ()=> goTab('settings'));
+}
 function render(){
   ensureNewFieldDefaults();
   document.getElementById('bizName').textContent = state.businessName;
+  updateNavLockBadges();
   const main = document.getElementById('main');
   main.innerHTML = '';
+  if(activeTab!=='settings' && tabLocked(activeTab)){ renderLockedTab(main, activeTab); return; }
   if(activeTab==='dashboard') renderDashboard(main);
   else if(activeTab==='cashflow') renderCashFlow(main);
   else if(activeTab==='sales') renderTxTab(main, 'sale', 'Sales', 'Money coming in from what you sell.', 'income');
@@ -4722,6 +4813,37 @@ function renderSettings(main){
     </details>
 
     <details class="panel report-collapse">
+      <summary><h2>Plan &amp; upgrade</h2></summary>
+      <div class="report-collapse-body">
+        <div class="settings-grid">
+          <div>
+            <label>Your App ID</label>
+            <input id="appIdDisplay" value="${state.appId||''}" readonly style="font-family:monospace; letter-spacing:.03em;">
+            <div class="field-note">Send this ID when you buy an upgrade — the code you get back only works on this App ID.</div>
+          </div>
+          <div>
+            <label>Current plan</label>
+            <input value="${TIER_LABELS[state.tier||'inventory']}" readonly>
+          </div>
+        </div>
+        <div class="field-note" style="margin:10px 0 4px;">
+          <b>Inventory</b> — Dashboard, Inventory, Settings.
+          &nbsp;·&nbsp; <b>Sales &amp; Purchase</b> adds Cash Flow, Sales, Purchases, Reconcile.
+          &nbsp;·&nbsp; <b>Complete</b> adds Journal Entry and Reports.
+        </div>
+
+        <div style="border-top:1px solid var(--rule); margin:18px 0 16px;"></div>
+
+        <label style="display:block;margin-bottom:6px;">Have an upgrade code?</label>
+        <div class="row">
+          <input id="upgradeCodeInput" placeholder="XXXXX-XXXXX" style="max-width:180px; font-family:monospace; text-transform:uppercase;">
+          <button class="btn primary" id="unlockTierBtn">Unlock</button>
+        </div>
+        <div class="field-note">Enter the code exactly as given, including the dash.</div>
+      </div>
+    </details>
+
+    <details class="panel report-collapse">
       <summary><h2>Data and danger zone</h2></summary>
       <div class="report-collapse-body">
         <label style="display:block;margin-bottom:6px;">Backup and restore</label>
@@ -5008,6 +5130,18 @@ function renderSettings(main){
       acc.opening = num; save(); toast(`${name} updated.`);
       drawAccChips(kind, kind==='asset'?'assetChips':kind==='liability'?'liabChips':'eqChips');
     }
+  });
+
+  document.getElementById('unlockTierBtn').addEventListener('click', ()=>{
+    const entered = document.getElementById('upgradeCodeInput').value.trim().toUpperCase();
+    if(!entered){ toast('Enter the upgrade code you were given.'); return; }
+    const haveRank = TIER_RANK[state.tier||'inventory'] || 1;
+    // Check from the top down so a "Complete" code (which also happens to satisfy nothing lower)
+    // unlocks the highest tier it actually matches, not the first one tried.
+    const match = [...TIER_ORDER].reverse().find(t => TIER_RANK[t] > haveRank && computeUpgradeCode(state.appId, t) === entered);
+    if(!match){ toast('That code doesn\'t match this App ID, or you already have this plan.'); return; }
+    state.tier = match;
+    save(); toast(`Unlocked — you're now on the ${TIER_LABELS[match]} plan.`); render();
   });
 
   document.getElementById('exportJsonBtn').addEventListener('click', ()=>{
