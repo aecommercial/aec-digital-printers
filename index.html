@@ -378,7 +378,10 @@ function seedState(){
       lastInvoiceFY: null,
       lastInvoiceNo: '',
       lastCashInvoiceFY: null,
-      lastCashInvoiceNo: ''
+      lastCashInvoiceNo: '',
+      template: 'classic',
+      accentColor: 'navy',
+      logoDataUrl: ''
     },
     transactions: [],
     inventoryItems: [],
@@ -1158,19 +1161,43 @@ function numToWordsIndian(num){
 /* Renders the business name in two tones: navy up to (and not including) "Commercial", rose-gold from
    "Commercial" onward — matches the approved invoice branding. Falls back to solid navy if the saved
    business name doesn't contain "Commercial" (e.g. it gets renamed later in Settings). */
-function brandNameHtml(name){
+/* Five fixed accent choices offered in Settings → Appearance for invoices. Each pairs a strong
+   "main" tone (borders, totals, the business name) with a muted "soft" tone (labels, the tagline,
+   the attribute sublines) — the same main+soft pairing the original navy/tan design used, just
+   swappable now instead of hardcoded. */
+const ACCENT_PALETTE = {
+  navy:     { main:'#162660', soft:'#8a5a3a', name:'Navy' },
+  forest:   { main:'#1E5631', soft:'#6b7a4a', name:'Forest Green' },
+  burgundy: { main:'#7A1F3D', soft:'#9c6b4f', name:'Burgundy' },
+  charcoal: { main:'#2B2B2B', soft:'#7a6a55', name:'Charcoal' },
+  teal:     { main:'#0E6E6E', soft:'#5f8a82', name:'Teal' }
+};
+function invoiceColors(){
+  const key = (state.invoiceSettings && state.invoiceSettings.accentColor) || 'navy';
+  return ACCENT_PALETTE[key] || ACCENT_PALETTE.navy;
+}
+function brandNameHtml(name, colors){
+  colors = colors || ACCENT_PALETTE.navy;
   name = name || '';
   const idx = name.indexOf('Commercial');
-  if(idx===-1) return `<span style="color:#162660;">${name}</span>`;
+  if(idx===-1) return `<span style="color:${colors.main};">${name}</span>`;
   const first = name.slice(0, idx).trim();
   const rest = name.slice(idx);
-  return `<span style="color:#162660;">${first}</span> <span style="color:#a8794f;">${rest}</span>`;
+  return `<span style="color:${colors.main};">${first}</span> <span style="color:${colors.soft};">${rest}</span>`;
+}
+/* A small <img> for the uploaded logo, sized per template, or '' if no logo was uploaded. */
+function invoiceLogoHtml(maxHeight){
+  const url = state.invoiceSettings && state.invoiceSettings.logoDataUrl;
+  if(!url) return '';
+  return `<img src="${url}" alt="Logo" style="max-height:${maxHeight}px;max-width:${maxHeight*2}px;object-fit:contain;display:block;">`;
 }
 
 function openInvoice(txId){
   const t = state.transactions.find(x=>x.id==txId);
   if(!t) return;
   const inv = state.invoiceSettings;
+  const colors = invoiceColors();
+  const template = inv.template || 'classic';
   const lines = txItems(t);
   // Credit/debit notes: stock and GST are reversed in storage using negative qty/amount/tax, so they net
   // out correctly wherever sales/purchases get totalled. On the printed document itself, flip the sign
@@ -1224,7 +1251,7 @@ function openInvoice(txId){
     const dispName = attrLine ? (ln.name||'').replace(/\s*\([^()]*\)\s*$/,'') : (ln.name||'');
     return `
     <tr><td style="padding:7px 6px;text-align:center;">${i+1}</td>
-    <td style="padding:7px 6px;">${dispName}${attrLine?`<div style="font-size:10.5px;color:#8a5a3a;margin-top:2px;">${attrLine}</div>`:''}</td>
+    <td style="padding:7px 6px;">${dispName}${attrLine?`<div style="font-size:10.5px;color:${colors.soft};margin-top:2px;">${attrLine}</div>`:''}</td>
     <td style="padding:7px 6px;text-align:center;">${ln.qty!=null && ln.qty!==''?fmt(Math.abs(ln.qty)):''}</td>
     <td style="padding:7px 6px;text-align:right;">${ln.rate!=null && ln.rate!==''?money(ln.rate):''}</td>
     <td style="padding:7px 6px;text-align:center;">${ln.gstRate!=null?ln.gstRate+'%':''}</td>
@@ -1245,31 +1272,70 @@ function openInvoice(txId){
 
   const contactBits = [t.contactPerson ? 'Attn: '+t.contactPerson : '', t.contactNumber ? 'Ph: '+t.contactNumber : ''].filter(Boolean).join(' · ');
 
-  const headerBlock = `
-      <div style="display:flex;justify-content:space-between;align-items:flex-start;padding-bottom:14px;border-bottom:2px solid #162660;">
-        <div>
-          <div style="font-weight:700;font-size:30px;">${brandNameHtml(inv.businessLegalName)}</div>
-          ${inv.tagline ? `<div style="font-size:15px;color:#8a5a3a;margin-top:4px;">${inv.tagline}</div>` : ''}
+  // The brand/doc-label row is the one part that actually differs in structure between the three
+  // templates — Classic keeps the original bordered two-column header, Modern minimal flattens it
+  // to a single thin-ruled line, Bold brand wraps it in a solid color band with white text. Everything
+  // below (Bill To, items table, totals) stays the same layout across all three, just recolored to
+  // whichever accent is picked, so the three templates never feel like three different apps.
+  const logoSmall = invoiceLogoHtml(44), logoBand = invoiceLogoHtml(40);
+  let brandRow;
+  if(template === 'bold'){
+    brandRow = `
+      <div style="display:flex;justify-content:space-between;align-items:center;background:${colors.main};color:#fff;padding:16px 18px;margin:-14mm -14mm 18px -14mm;">
+        <div style="display:flex;align-items:center;gap:12px;">
+          ${logoBand ? `<div style="background:#fff;border-radius:6px;padding:4px 8px;">${logoBand}</div>` : ''}
+          <div>
+            <div style="font-weight:700;font-size:28px;color:#fff;">${inv.businessLegalName}</div>
+            ${inv.tagline ? `<div style="font-size:14px;color:#fff;opacity:.85;margin-top:2px;">${inv.tagline}</div>` : ''}
+          </div>
         </div>
-        <div style="text-align:right;font-weight:700;font-size:20px;letter-spacing:.05em;color:#162660;padding-top:3px;">${docLabel}</div>
-      </div>
-      <div style="display:flex;justify-content:space-between;gap:20px;padding:18px 0;border-bottom:0.5px solid #e8d2c0;font-size:15px;">
+        <div style="text-align:right;font-weight:700;font-size:19px;letter-spacing:.05em;color:#fff;">${docLabel}</div>
+      </div>`;
+  } else if(template === 'modern'){
+    brandRow = `
+      <div style="display:flex;justify-content:space-between;align-items:center;padding-bottom:12px;border-bottom:1px solid ${colors.main};">
+        <div style="display:flex;align-items:center;gap:12px;">
+          ${logoSmall}
+          <div>
+            <div style="font-weight:600;font-size:24px;letter-spacing:.01em;">${brandNameHtml(inv.businessLegalName, colors)}</div>
+            ${inv.tagline ? `<div style="font-size:13px;color:#8a8a8a;margin-top:2px;">${inv.tagline}</div>` : ''}
+          </div>
+        </div>
+        <div style="text-align:right;font-weight:600;font-size:14px;letter-spacing:.12em;color:${colors.main};">${docLabel}</div>
+      </div>`;
+  } else {
+    brandRow = `
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;padding-bottom:14px;border-bottom:2px solid ${colors.main};">
+        <div style="display:flex;align-items:center;gap:12px;">
+          ${logoSmall}
+          <div>
+            <div style="font-weight:700;font-size:30px;">${brandNameHtml(inv.businessLegalName, colors)}</div>
+            ${inv.tagline ? `<div style="font-size:15px;color:${colors.soft};margin-top:4px;">${inv.tagline}</div>` : ''}
+          </div>
+        </div>
+        <div style="text-align:right;font-weight:700;font-size:20px;letter-spacing:.05em;color:${colors.main};padding-top:3px;">${docLabel}</div>
+      </div>`;
+  }
+
+  const headerBlock = `
+      ${brandRow}
+      <div style="display:flex;justify-content:space-between;gap:20px;padding:18px 0;border-bottom:0.5px solid #e0e0e0;font-size:15px;">
         <div style="width:55%;">
-          <div style="font-size:18px;color:#8a5a3a;text-transform:uppercase;letter-spacing:.04em;margin-bottom:4px;">${isReturnDoc ? 'Issued To' : 'Bill To'}</div>
+          <div style="font-size:18px;color:${colors.soft};text-transform:uppercase;letter-spacing:.04em;margin-bottom:4px;">${isReturnDoc ? 'Issued To' : 'Bill To'}</div>
           <b>${t.description || '—'}</b><br>
           ${t.address ? t.address+'<br>' : ''}
           ${contactBits ? contactBits+'<br>' : ''}
           ${t.gstin ? 'GST No. '+t.gstin : ''}
         </div>
         <table style="width:45%;border-collapse:collapse;height:fit-content;">
-          <tr><td style="color:#8a5a3a;padding:2px 0;text-align:right;">${noNoLabel}</td><td style="text-align:right;padding:2px 0 2px 10px;font-weight:700;">${t.invoiceNo || ('(none — set one on the entry)')}</td></tr>
-          <tr><td style="color:#8a5a3a;padding:2px 0;text-align:right;">${noDateLabel}</td><td style="text-align:right;padding:2px 0 2px 10px;font-weight:700;">${dispDate(t.date)}</td></tr>
-          ${isReturnDoc && t.refInvoiceNo ? `<tr><td style="color:#8a5a3a;padding:2px 0;text-align:right;">Against Invoice</td><td style="text-align:right;padding:2px 0 2px 10px;font-weight:700;">${t.refInvoiceNo}</td></tr>` : ''}
-          ${placeOfSupply ? `<tr><td style="color:#8a5a3a;padding:2px 0;text-align:right;">Place of Supply</td><td style="text-align:right;padding:2px 0 2px 10px;font-weight:700;">${placeOfSupply}</td></tr>` : ''}
+          <tr><td style="color:${colors.soft};padding:2px 0;text-align:right;">${noNoLabel}</td><td style="text-align:right;padding:2px 0 2px 10px;font-weight:700;">${t.invoiceNo || ('(none — set one on the entry)')}</td></tr>
+          <tr><td style="color:${colors.soft};padding:2px 0;text-align:right;">${noDateLabel}</td><td style="text-align:right;padding:2px 0 2px 10px;font-weight:700;">${dispDate(t.date)}</td></tr>
+          ${isReturnDoc && t.refInvoiceNo ? `<tr><td style="color:${colors.soft};padding:2px 0;text-align:right;">Against Invoice</td><td style="text-align:right;padding:2px 0 2px 10px;font-weight:700;">${t.refInvoiceNo}</td></tr>` : ''}
+          ${placeOfSupply ? `<tr><td style="color:${colors.soft};padding:2px 0;text-align:right;">Place of Supply</td><td style="text-align:right;padding:2px 0 2px 10px;font-weight:700;">${placeOfSupply}</td></tr>` : ''}
         </table>
       </div>
       <table class="inv-items-tbl" style="width:100%;border-collapse:collapse;table-layout:fixed;margin-top:6px;font-size:15px;">
-        <thead><tr style="border-bottom:1px solid #b28a5c;">
+        <thead><tr style="border-bottom:1px solid ${colors.soft};">
           <th style="padding:9px 6px;text-align:center;width:8%;">Sr No</th>
           <th style="padding:9px 6px;text-align:left;width:34%;">Description</th>
           <th style="padding:9px 6px;text-align:center;width:12%;">Qty</th>
@@ -1285,17 +1351,17 @@ function openInvoice(txId){
   const totalsBlock = `
       <table style="width:100%;border-collapse:collapse;font-size:15px;">
         <tfoot>
-          <tr style="border-top:1px solid #d9b8a0;"><td colspan="5" style="text-align:right;padding:3px 6px;">Subtotal</td><td style="text-align:right;padding:3px 6px;">${money(subtotal)}</td></tr>
+          <tr style="border-top:1px solid #ddd;"><td colspan="5" style="text-align:right;padding:3px 6px;">Subtotal</td><td style="text-align:right;padding:3px 6px;">${money(subtotal)}</td></tr>
           ${taxRows}
           <tr><td colspan="5" style="text-align:right;padding:3px 6px;">Round Off</td><td style="text-align:right;padding:3px 6px;">${money(roundOff)}</td></tr>
-          <tr style="border-top:2px solid #162660;font-weight:700;"><td colspan="5" style="text-align:right;padding:7px 6px;">${t.docType==='credit-note' ? 'TOTAL CREDIT' : t.docType==='debit-note' ? 'TOTAL DEBIT' : 'TOTAL'}</td><td style="text-align:right;padding:7px 6px;font-size:20px;color:#162660;">${money(grand)}</td></tr>
+          <tr style="border-top:2px solid ${colors.main};font-weight:700;"><td colspan="5" style="text-align:right;padding:7px 6px;">${t.docType==='credit-note' ? 'TOTAL CREDIT' : t.docType==='debit-note' ? 'TOTAL DEBIT' : 'TOTAL'}</td><td style="text-align:right;padding:7px 6px;font-size:20px;color:${colors.main};">${money(grand)}</td></tr>
         </tfoot>
       </table>
       <div style="margin-top:8px;font-size:15px;"><b>Rs.</b> ${numToWordsIndian(grand)} Rupees Only</div>
       <table style="width:100%;margin-top:26px;font-size:15px;">
         <tr>
           <td style="width:55%;vertical-align:top;">
-            <div style="font-size:18px;color:#8a5a3a;text-transform:uppercase;letter-spacing:.04em;margin-bottom:4px;">Bank Details</div>
+            <div style="font-size:18px;color:${colors.soft};text-transform:uppercase;letter-spacing:.04em;margin-bottom:4px;">Bank Details</div>
             ${inv.bankName}<br>
             Account Holder: ${inv.accountHolder}<br>
             Account No.: ${inv.accountNo}<br>
@@ -1303,25 +1369,28 @@ function openInvoice(txId){
           </td>
           <td style="width:45%;vertical-align:top;text-align:right;">
             Thanking You<br><br><br>
-            <div style="font-size:18px;color:#8a5a3a;text-transform:uppercase;letter-spacing:.04em;margin-bottom:4px;">Authorised Signatory</div>
+            <div style="font-size:18px;color:${colors.soft};text-transform:uppercase;letter-spacing:.04em;margin-bottom:4px;">Authorised Signatory</div>
             For ${inv.businessLegalName}<br><br>
           </td>
         </tr>
       </table>
-      <div style="text-align:center;font-size:15px;margin-top:16px;border-top:2px solid #162660;padding-top:8px;color:#8a5a3a;">
+      <div style="text-align:center;font-size:15px;margin-top:16px;border-top:2px solid ${colors.main};padding-top:8px;color:${colors.soft};">
         GST No. ${inv.gstin} &nbsp;&nbsp; PAN No. ${inv.pan}<br>
         Address: ${inv.address} Mobile No.: ${inv.mobile}, Email ${inv.email}
       </div>`;
 
+  // Classic keeps the original cream page (set by the .inv-sheet class itself); Modern minimal and
+  // Bold brand both read better on plain white, so those two override it inline per sheet.
+  const sheetBg = template === 'classic' ? '' : 'background:#fff;';
   const SINGLE_PAGE_MAX = 14; // empirically tested with typical one-line item descriptions
   const pagesHtml = lines.length <= SINGLE_PAGE_MAX
-    ? `<div class="inv-sheet inv-sheet--col">
+    ? `<div class="inv-sheet inv-sheet--col" style="${sheetBg}">
          <div>${headerBlock}</div>
          <div class="inv-spacer"></div>
          <div>${totalsBlock}</div>
        </div>`
-    : `<div class="inv-sheet">${headerBlock}</div>
-       <div class="inv-sheet inv-sheet--col inv-sheet--break">
+    : `<div class="inv-sheet" style="${sheetBg}">${headerBlock}</div>
+       <div class="inv-sheet inv-sheet--col inv-sheet--break" style="${sheetBg}">
          <div class="inv-spacer"></div>
          <div>${totalsBlock}</div>
        </div>`;
@@ -1892,6 +1961,9 @@ function ensureNewFieldDefaults(){
      starts gated. appId is likewise generated once, the first time it's missing, and then kept. */
   if(!state.tier) state.tier = 'complete';
   if(!state.appId) state.appId = genAppId();
+  if(!state.invoiceSettings.template) state.invoiceSettings.template = 'classic';
+  if(!state.invoiceSettings.accentColor) state.invoiceSettings.accentColor = 'navy';
+  if(state.invoiceSettings.logoDataUrl===undefined) state.invoiceSettings.logoDataUrl = '';
   (state.accounts.asset||[]).forEach(a=>{ if(a.subtitle===undefined) a.subtitle = a.type==='fixed' ? 'Fixed Assets' : 'Current Assets'; });
   (state.accounts.liability||[]).forEach(a=>{ if(a.subtitle===undefined) a.subtitle = a.type==='longterm' ? 'Long-term Liabilities' : 'Current Liabilities'; });
   (state.accounts.equity||[]).forEach(a=>{ if(a.subtitle===undefined) a.subtitle = 'Capital & Reserves'; });
@@ -4724,6 +4796,30 @@ function renderSettings(main){
         </div>
         <div class="row" style="margin-top:12px;"><button class="btn primary" id="saveInvBtn">Save invoice details</button></div>
         <div class="field-note">Set the invoice number when you record the sale itself.</div>
+
+        <div style="border-top:1px solid var(--rule); margin:22px 0 18px;"></div>
+
+        <label style="display:block;margin-bottom:8px;">Invoice template</label>
+        <div class="row" style="flex-wrap:wrap; gap:10px;">
+          ${[['classic','Classic'],['modern','Modern minimal'],['bold','Bold brand']].map(([key,label])=>
+            `<button type="button" class="btn ${(state.invoiceSettings.template||'classic')===key ? 'primary':'ghost'} small" data-invoice-template="${key}">${label}</button>`
+          ).join('')}
+        </div>
+        <div class="field-note" style="margin-top:6px;">Classic — the original cream, letterhead-style layout. Modern minimal — a clean white page with a thin rule. Bold brand — a solid color band across the top.</div>
+
+        <label style="display:block;margin:18px 0 8px;">Accent color</label>
+        <div class="row" style="flex-wrap:wrap; gap:10px; align-items:center;">
+          ${Object.keys(ACCENT_PALETTE).map(key=>`<button type="button" class="theme-swatch-btn" data-invoice-accent="${key}" title="${ACCENT_PALETTE[key].name}" style="width:34px;height:34px;border-radius:50%;border:2px solid ${(state.invoiceSettings.accentColor||'navy')===key ? 'var(--ink)':'transparent'};background:${ACCENT_PALETTE[key].main};cursor:pointer;padding:0;"></button>`).join('')}
+          <span class="field-note" style="margin:0;">${ACCENT_PALETTE[state.invoiceSettings.accentColor||'navy'].name}</span>
+        </div>
+
+        <label style="display:block;margin:18px 0 8px;">Logo</label>
+        <div class="row" style="gap:10px; align-items:center;">
+          <input type="file" id="invoiceLogoFile" accept="image/png,image/jpeg,image/svg+xml">
+          ${state.invoiceSettings.logoDataUrl ? `<img src="${state.invoiceSettings.logoDataUrl}" alt="Logo preview" style="height:36px;max-width:100px;object-fit:contain;border:1px solid var(--rule);border-radius:4px;background:#fff;padding:2px;">
+            <button type="button" class="btn ghost small" id="removeInvoiceLogoBtn">Remove</button>` : `<span class="field-note" style="margin:0;">No logo uploaded yet</span>`}
+        </div>
+        <div class="field-note" style="margin-top:6px;">PNG recommended, roughly square, under 500KB — it'll appear on every invoice you print.</div>
       </div>
     </details>
 
@@ -4920,7 +5016,11 @@ function renderSettings(main){
   });
 
   document.getElementById('saveInvBtn').addEventListener('click', ()=>{
+    // Spread the existing settings first (not just the few fields this form edits) so anything
+    // set elsewhere — invoice numbering counters, and the template/color/logo picked below —
+    // survives a save here instead of silently reverting to defaults.
     state.invoiceSettings = {
+      ...state.invoiceSettings,
       businessLegalName: document.getElementById('invNameInput').value.trim() || state.invoiceSettings.businessLegalName,
       tagline: document.getElementById('invTaglineInput').value.trim(),
       gstin: document.getElementById('invGstinInput').value.trim().toUpperCase(),
@@ -4931,11 +5031,38 @@ function renderSettings(main){
       bankName: document.getElementById('invBankInput').value.trim(),
       accountHolder: document.getElementById('invAccHolderInput').value.trim(),
       accountNo: document.getElementById('invAccNoInput').value.trim(),
-      ifsc: document.getElementById('invIfscInput').value.trim(),
-      nextInvoiceNo: state.invoiceSettings.nextInvoiceNo,
-      invoicePrefix: state.invoiceSettings.invoicePrefix
+      ifsc: document.getElementById('invIfscInput').value.trim()
     };
     save(); toast('Invoice details saved.'); render();
+  });
+
+  document.querySelectorAll('[data-invoice-template]').forEach(btn=>{
+    btn.addEventListener('click', ()=>{
+      state.invoiceSettings.template = btn.dataset.invoiceTemplate;
+      save(); toast(`"${btn.textContent}" template applied.`); render();
+    });
+  });
+  document.querySelectorAll('[data-invoice-accent]').forEach(btn=>{
+    btn.addEventListener('click', ()=>{
+      state.invoiceSettings.accentColor = btn.dataset.invoiceAccent;
+      save(); toast(`${ACCENT_PALETTE[btn.dataset.invoiceAccent].name} accent applied.`); render();
+    });
+  });
+  document.getElementById('invoiceLogoFile').addEventListener('change', e=>{
+    const file = e.target.files[0]; if(!file) return;
+    if(file.size > 500*1024){ toast('That logo is over 500KB — try a smaller PNG so it doesn\'t bloat your saved data.'); e.target.value=''; return; }
+    const reader = new FileReader();
+    reader.onload = ()=>{
+      state.invoiceSettings.logoDataUrl = reader.result;
+      save(); toast(`Logo "${file.name}" uploaded.`); render();
+    };
+    reader.onerror = ()=> toast('Could not read that image file.');
+    reader.readAsDataURL(file);
+  });
+  const removeLogoBtn = document.getElementById('removeInvoiceLogoBtn');
+  if(removeLogoBtn) removeLogoBtn.addEventListener('click', ()=>{
+    state.invoiceSettings.logoDataUrl = '';
+    save(); toast('Logo removed.'); render();
   });
 
   function catUsed(group, name){ return state.transactions.some(t=> (group==='income'? (t.kind==='sale'||t.kind==='income') : (t.kind==='purchase'||t.kind==='expense')) && t.category===name); }
