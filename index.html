@@ -3559,6 +3559,13 @@ function computeLedgerResultHtml(selValue){
       entries.push({ date:t.date, desc:`${partyKind==='sale'?'Invoice':'Bill'} ${t.invoiceNo||''}`.trim(), dr:txTotal(t), cr:0, ord:0 });
       (t.payments||[]).forEach(p=>{
         if(p.amount>0.004) entries.push({ date:p.date||t.date, desc:`Payment ${partyKind==='sale'?'received':'made'}${p.account?' — '+p.account:''}`, dr:0, cr:p.amount, ord:1 });
+        // A settlement discount (given via "Mark received"/"Mark paid", tagged with discountReason) writes
+        // part of the invoice off with no cash movement — it still has to show as a credit here, or the
+        // party's balance keeps carrying that amount as outstanding even though the invoice was marked
+        // fully settled. A return write-off (tagged with `note` instead, from a credit/debit note) is
+        // deliberately excluded — the credit/debit note line below already represents that same value, so
+        // listing both would double-count it.
+        if(p.discount>0.004 && p.discountReason && !p.note) entries.push({ date:p.date||t.date, desc:`Discount ${partyKind==='sale'?'given':'received'}${p.discountReason?' — '+p.discountReason:''}`, dr:0, cr:p.discount, ord:1 });
       });
     });
     allTx.filter(t=>t.docType==='credit-note'||t.docType==='debit-note').forEach(t=>{
