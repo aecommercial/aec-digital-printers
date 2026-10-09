@@ -9,6 +9,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 <script src="https://accounts.google.com/gsi/client" async defer></script>
 <link rel="manifest" href="manifest.json">
 <meta name="theme-color" content="#6B84D1">
@@ -216,6 +217,7 @@
   <aside class="sidebar">
     <div class="brand"><div class="mark">A</div><div class="name">Accounts Book</div></div>
     <div class="biz"><b id="bizName">Your Business</b>Simple books for small &amp; medium businesses</div>
+    <div id="bookSwitcher" style="display:none;"></div>
     <nav id="nav">
       <button data-tab="dashboard" class="active"><span class="ico">◆</span> Dashboard</button>
       <button data-tab="cashflow"><span class="ico">⌁</span> Cash Flow</button>
@@ -248,6 +250,7 @@ const GOOGLE_CLIENT_ID = '679517527922-qlc22rfaqp099c543gd1rfbj6ia33lhr.apps.goo
 const DRIVE_FOLDER_NAME = 'Accounts — App Data';
 const DRIVE_FILE_NAME = 'accounts-data.json';
 const DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive.file';
+if(window.pdfjsLib){ pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js'; }
 
 /* ============================= DATA LAYER ============================= */
 const STORAGE_KEY = 'accounts_book_v2_digital_printing';
@@ -259,6 +262,35 @@ const RECEIVABLE_ACCOUNT = 'Accounts Receivable (Pending)';
 const PAYABLE_ACCOUNT = 'Accounts Payable (Pending)';
 const CREDIT_NOTE_CATEGORY = 'Sales Returns / Credit Notes';
 const PURCHASE_RETURN_CATEGORY = 'Purchase Returns / Debit Notes';
+
+/* ============================= ACCOUNTANT MODE (multiple customer books) =============================
+   Off by default — a single shop owner never sees any of this, and the app behaves exactly as it always
+   has: one localStorage save, one Drive file. Turned on in Settings → Customers (for accountants managing
+   several clients), it adds a "book" per customer: each book is a COMPLETE, independent copy of the normal
+   state shape — own transactions, own accounts, own invoice settings, even its own tier/App ID — stored
+   under its own localStorage key and, once signed in, its own file in the same Drive folder. Switching
+   books never partially merges one customer's data into another's; it saves the current book's slot, then
+   loads the other book's slot wholesale into `state`, same as reopening the app on a different file. */
+const REGISTRY_KEY = STORAGE_KEY + '__registry';
+function loadRegistry(){
+  try{
+    const raw = localStorage.getItem(REGISTRY_KEY);
+    if(!raw) return { accountantMode:false, activeBookId:null, books:[] };
+    const r = JSON.parse(raw);
+    if(!Array.isArray(r.books)) r.books = [];
+    if(r.accountantMode===undefined) r.accountantMode = false;
+    if(r.activeBookId===undefined) r.activeBookId = null;
+    return r;
+  }catch(e){ return { accountantMode:false, activeBookId:null, books:[] }; }
+}
+function saveRegistry(){ try{ localStorage.setItem(REGISTRY_KEY, JSON.stringify(registry)); }catch(e){} }
+let registry = loadRegistry();
+function bookStorageKey(id){ return STORAGE_KEY + '__book_' + id; }
+/* Which localStorage key the CURRENT in-memory `state` reads from / writes to. Accountant mode off, or
+   on but no book picked yet: the plain, original key — a single-business install never changes behavior. */
+function activeStorageKey(){
+  return (registry.accountantMode && registry.activeBookId) ? bookStorageKey(registry.activeBookId) : STORAGE_KEY;
+}
 
 /* ============================= APPEARANCE (color themes + fonts) =============================
    10 selectable color options total: 9 named preset palettes below, plus "Custom" (a 6-swatch
@@ -405,7 +437,7 @@ function seedState(){
 let state = load();
 function load(){
   try{
-    const raw = localStorage.getItem(STORAGE_KEY);
+    const raw = localStorage.getItem(activeStorageKey());
     if(!raw) return seedState();
     const p = JSON.parse(raw);
     if(!p.categories) return seedState();
@@ -443,15 +475,15 @@ function load(){
 }
 function save(){
   state.lastModified = Date.now();
-  try{ localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }
+  try{ localStorage.setItem(activeStorageKey(), JSON.stringify(state)); }
   catch(e){ toast("Couldn't save — this browser's storage is full. Try removing some item photos."); }
   scheduleDriveSave();
 }
 /* Rough estimate only — actual browser quotas vary (roughly 5-10MB per site) and aren't queryable directly. */
 const ESTIMATED_STORAGE_LIMIT_BYTES = 5 * 1024 * 1024;
 function storageUsedBytes(){
-  try{ return new Blob([localStorage.getItem(STORAGE_KEY)||'']).size; }
-  catch(e){ return (localStorage.getItem(STORAGE_KEY)||'').length; }
+  try{ return new Blob([localStorage.getItem(activeStorageKey())||'']).size; }
+  catch(e){ return (localStorage.getItem(activeStorageKey())||'').length; }
 }
 
 /* ============================= GOOGLE DRIVE SYNC =============================
@@ -460,7 +492,7 @@ function storageUsedBytes(){
    exactly as before — Drive sync just layers automatic cross-device backup on top of it. Whichever
    copy (local vs Drive) was saved more recently wins when the app opens, so an offline device never
    silently overwrites newer work done elsewhere. */
-let gDriveReady = false, gDriveFileId = null, gAccessToken = null, gTokenClient = null, gDriveSaveTimer = null;
+let gDriveReady = false, gDriveFileId = null, gDriveFolderId = null, gAccessToken = null, gTokenClient = null, gDriveSaveTimer = null;
 let dashSyncInterval = null;
 function driveStatus(msg){ const el = document.getElementById('driveStatus'); if(el) el.textContent = msg; updateDashSyncUI(); }
 function markSynced(){
@@ -552,13 +584,26 @@ async function findOrCreateFolder(){
     body: JSON.stringify({name:DRIVE_FOLDER_NAME, mimeType:'application/vnd.google-apps.folder'})});
   return created.id;
 }
-async function findOrCreateFile(folderId){
-  const q = encodeURIComponent(`name='${DRIVE_FILE_NAME}' and '${folderId}' in parents and trashed=false`);
+/* fileName defaults to the single-business file; accountant mode passes a book-specific name instead
+   (see driveFileNameForActiveBook) so each customer gets its own file in the same Drive folder. */
+async function findOrCreateFile(folderId, fileName){
+  fileName = fileName || DRIVE_FILE_NAME;
+  const q = encodeURIComponent(`name='${fileName}' and '${folderId}' in parents and trashed=false`);
   const res = await driveApi(`files?q=${q}&fields=files(id,name)`);
   if(res.files && res.files.length) return res.files[0].id;
   const created = await driveApi('files', {method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({name:DRIVE_FILE_NAME, parents:[folderId]})});
+    body: JSON.stringify({name:fileName, parents:[folderId]})});
   return created.id;
+}
+/* The Drive file name for whichever book is currently open. Single-business installs (accountant mode
+   off) always use the plain DRIVE_FILE_NAME, so they're never affected by any of this. */
+function driveFileNameForActiveBook(){
+  if(registry.accountantMode && registry.activeBookId){
+    const b = registry.books.find(x=>x.id===registry.activeBookId);
+    const safe = (b && b.name ? b.name : 'customer').trim().replace(/[^a-z0-9]+/gi,'-').toLowerCase().replace(/^-+|-+$/g,'');
+    return `accounts-data__${safe||'customer'}-${registry.activeBookId}.json`;
+  }
+  return DRIVE_FILE_NAME;
 }
 async function driveDownload(fileId){
   const r = await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`, {headers:{'Authorization':'Bearer '+gAccessToken}});
@@ -577,7 +622,8 @@ async function onDriveSignedIn(){
   driveStatus('connecting…');
   try{
     const folderId = await findOrCreateFolder();
-    gDriveFileId = await findOrCreateFile(folderId);
+    gDriveFolderId = folderId;
+    gDriveFileId = await findOrCreateFile(folderId, driveFileNameForActiveBook());
     await syncMerge();
     gDriveReady = true;
     if(gate) gate.style.display = 'none';
@@ -599,7 +645,77 @@ function scheduleDriveSave(){
   }, 1200);
 }
 
-function driveSignOut(){   if(gAccessToken && window.google){ google.accounts.oauth2.revoke(gAccessToken, ()=>{}); }   gAccessToken = null; gDriveReady = false; gDriveFileId = null;   driveStatus('signed out');   const gate = document.getElementById('signinGate');   if(gate) gate.style.display = 'flex'; } /* Was a simple incrementing counter (state.nextId++), which works fine for one device but breaks the
+/* ============================= ACCOUNTANT MODE — switching, adding, enabling =============================
+   See the registry/activeStorageKey comment near STORAGE_KEY for the overall design: every function below
+   only ever touches `registry` and the per-book localStorage slots, never the plain in-app record arrays
+   directly — `state` itself is swapped out wholesale, so every other screen in the app (Sales, Reports,
+   Settings, all of it) keeps working exactly as written, unaware that more than one book exists. */
+function saveActiveBookMeta(){
+  if(!registry.activeBookId) return;
+  const b = registry.books.find(x=>x.id===registry.activeBookId);
+  if(b){ b.name = state.businessName || b.name; b.updatedAt = Date.now(); saveRegistry(); }
+}
+async function switchBook(id){
+  if(registry.activeBookId === id) return;
+  save();
+  saveActiveBookMeta();
+  registry.activeBookId = id;
+  saveRegistry();
+  const raw = localStorage.getItem(activeStorageKey());
+  state = raw ? JSON.parse(raw) : seedState();
+  ensureNewFieldDefaults();
+  activeTab = 'dashboard'; editingTxId = null; editingItemId = null;
+  [...nav.querySelectorAll('button')].forEach(b=>b.classList.toggle('active', b.dataset.tab==='dashboard'));
+  save();
+  render();
+  // Already signed in to Drive: re-point at this customer's own Drive file and pull its latest cloud
+  // copy right away, so switching never shows stale data left over from this device's last visit.
+  if(gAccessToken){
+    try{
+      driveStatus('switching…');
+      const folderId = gDriveFolderId || await findOrCreateFolder();
+      gDriveFolderId = folderId;
+      gDriveFileId = await findOrCreateFile(folderId, driveFileNameForActiveBook());
+      await syncMerge();
+      gDriveReady = true;
+      markSynced(); driveStatus('synced just now'); render();
+    }catch(e){ driveStatus('offline — working locally, will retry'); }
+  }
+}
+function createAndSwitchToNewBook(name){
+  const id = uid();
+  const fresh = seedState();
+  fresh.businessName = name;
+  fresh.invoiceSettings.businessLegalName = name;
+  try{ localStorage.setItem(bookStorageKey(id), JSON.stringify(fresh)); }catch(e){}
+  registry.books.push({ id, name, updatedAt: Date.now() });
+  saveRegistry();
+  switchBook(id);
+}
+/* Turning accountant mode on for the first time migrates whatever's open right now into book #1 — named
+   after the business already in use — so nothing already entered is lost or hidden. */
+function enableAccountantMode(){
+  if(registry.accountantMode) return;
+  const migratingId = uid();
+  const name = state.businessName || 'My Business';
+  try{ localStorage.setItem(bookStorageKey(migratingId), JSON.stringify(state)); }catch(e){}
+  registry.accountantMode = true;
+  registry.books = [{ id: migratingId, name, updatedAt: Date.now() }];
+  registry.activeBookId = migratingId;
+  saveRegistry();
+}
+/* Carries whichever book is open back into the plain single-book slot, so turning accountant mode off
+   simply continues with that customer's data as the one-and-only book from here on — nothing entered
+   while accountant mode was on gets hidden or rolled back to an older snapshot. */
+function disableAccountantMode(){
+  try{ localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }catch(e){}
+  registry.accountantMode = false;
+  registry.activeBookId = null;
+  saveRegistry();
+  activeTab = 'dashboard';
+}
+
+function driveSignOut(){   if(gAccessToken && window.google){ google.accounts.oauth2.revoke(gAccessToken, ()=>{}); }   gAccessToken = null; gDriveReady = false; gDriveFileId = null; gDriveFolderId = null;   driveStatus('signed out');   const gate = document.getElementById('signinGate');   if(gate) gate.style.display = 'flex'; } /* Was a simple incrementing counter (state.nextId++), which works fine for one device but breaks the
    moment two devices create records offline at the same time — both start counting from the same
    base and generate colliding ids for entirely different records. A merge can't tell those apart. This
    combines the current time with a random suffix, so ids stay unique across devices without needing
@@ -718,7 +834,7 @@ async function syncMerge(){
   const beforeCount = state.transactions.length;
   const merged = mergeRemoteIntoLocal(remote, state);
   state = merged;
-  try{ localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }catch(e){}
+  try{ localStorage.setItem(activeStorageKey(), JSON.stringify(state)); }catch(e){}
   const diff = state.transactions.length - beforeCount;
   if(diff>0) toast(`Synced in ${diff} ${diff===1?'entry':'entries'} from another device — check Recent Entries.`);
   else if(diff<0) toast(`${-diff} ${-diff===1?'entry was':'entries were'} deleted on another device and removed here too.`);
@@ -1992,9 +2108,56 @@ function renderLockedTab(main, tab){
   const btn = document.getElementById('lockedGoSettingsBtn');
   if(btn) btn.addEventListener('click', ()=> goTab('settings'));
 }
+/* Pinned to the top of the sidebar, below the plain business/tagline line — hidden entirely while
+   accountant mode is off, so a single shop owner never sees anything about customers or switching.
+   Redrawn directly by id rather than through the main render(), so opening/closing the dropdown never
+   re-renders (and re-scrolls) whatever tab is actually open behind it. */
+let bookSwitcherOpen = false;
+function renderBookSwitcher(){
+  const box = document.getElementById('bookSwitcher');
+  if(!box) return;
+  if(!registry.accountantMode){ box.innerHTML=''; box.style.display='none'; return; }
+  box.style.display = 'block';
+  const current = registry.books.find(b=>b.id===registry.activeBookId);
+  const currentName = current ? current.name : 'Select a customer';
+  box.innerHTML = `
+    <div style="position:relative;margin:0 0 14px;">
+      <button type="button" id="bookSwitcherBtn" style="width:100%;text-align:left;background:#262C50;border:1px solid #3A4176;border-radius:9px;padding:10px 11px;color:#fff;display:flex;justify-content:space-between;align-items:center;gap:8px;cursor:pointer;font:inherit;">
+        <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px;font-weight:700;">${currentName}</span>
+        <span style="color:#9AA2CC;flex-shrink:0;">▾</span>
+      </button>
+      <div id="bookSwitcherPanel" style="display:${bookSwitcherOpen?'block':'none'};position:absolute;top:44px;left:0;right:0;z-index:50;background:#fff;border-radius:10px;box-shadow:0 10px 30px rgba(10,12,30,.35);padding:8px;max-height:320px;overflow:auto;">
+        ${registry.books.map(b=>`
+          <div class="book-row" data-book-id="${b.id}" style="display:flex;align-items:center;gap:8px;padding:8px 9px;border-radius:7px;cursor:pointer;${b.id===registry.activeBookId?'background:#EFF2FB;':''}">
+            <span style="flex:1;min-width:0;font-size:13px;font-weight:600;color:#2E2B40;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${b.name}</span>
+            ${b.id===registry.activeBookId?'<span style="color:#6B84D1;font-weight:700;">✓</span>':''}
+          </div>`).join('')}
+        <div style="border-top:1px solid #F0EFF7;margin-top:6px;padding-top:6px;">
+          <button type="button" id="addBookBtn" style="width:100%;text-align:left;background:none;border:none;padding:8px 9px;color:#6B84D1;font-weight:700;font-size:13px;cursor:pointer;font:inherit;">＋ Add new customer</button>
+        </div>
+      </div>
+    </div>`;
+  document.getElementById('bookSwitcherBtn').addEventListener('click', ()=>{ bookSwitcherOpen=!bookSwitcherOpen; renderBookSwitcher(); });
+  box.querySelectorAll('.book-row').forEach(row=>{
+    row.addEventListener('click', ()=>{ bookSwitcherOpen=false; switchBook(row.dataset.bookId); });
+  });
+  const addBtn = document.getElementById('addBookBtn');
+  if(addBtn) addBtn.addEventListener('click', ()=>{
+    const name = prompt('New customer / business name:');
+    bookSwitcherOpen = false;
+    if(!name || !name.trim()){ renderBookSwitcher(); return; }
+    createAndSwitchToNewBook(name.trim());
+  });
+}
+document.addEventListener('click', (e)=>{
+  if(!bookSwitcherOpen) return;
+  const box = document.getElementById('bookSwitcher');
+  if(box && !box.contains(e.target)){ bookSwitcherOpen=false; renderBookSwitcher(); }
+});
 function render(){
   ensureNewFieldDefaults();
   document.getElementById('bizName').textContent = state.businessName;
+  renderBookSwitcher();
   updateNavLockBadges();
   const main = document.getElementById('main');
   main.innerHTML = '';
@@ -2091,6 +2254,68 @@ function renderRecent(){
 }
 
 /* ============================= SALES / PURCHASES / EXPENSES / INCOME (shared) ============================= */
+/* ============================= UPLOAD INVOICE (PDF) =============================
+   Reads a vendor's or marketplace's PDF bill in the browser (no server, no AI call — this app has
+   neither) and pre-fills the Sales/Purchases entry form from it, so a bill can be entered without
+   retyping every field by hand. This only works well on a PDF that was generated with selectable text
+   (an emailed bill, a printed-to-PDF invoice); a scanned or photographed one has no text layer to read
+   at all, so extraction will come back mostly empty — the person always reviews and saves through the
+   REAL entry form below, nothing here saves on its own. */
+async function extractTextFromPdfFile(file){
+  if(!window.pdfjsLib) throw new Error('pdf.js not loaded');
+  const buf = await file.arrayBuffer();
+  const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
+  let text = '';
+  const pageCount = Math.min(pdf.numPages, 5); // bills are almost never more than a few pages
+  for(let i=1; i<=pageCount; i++){
+    const page = await pdf.getPage(i);
+    const content = await page.getTextContent();
+    text += content.items.map(it=>it.str).join(' ') + '\n';
+  }
+  return text;
+}
+/* Best-effort pattern matching only — there's no universal invoice layout, so every field here can
+   come back wrong or empty; the form it fills stays fully editable, and nothing is auto-saved. */
+function extractInvoiceFieldsFromText(text){
+  const norm = (text||'').replace(/\r/g,'');
+  const lines = norm.split('\n').map(l=>l.trim()).filter(Boolean);
+  let partyName = '';
+  for(const l of lines.slice(0, 10)){
+    if(/^(tax\s*invoice|invoice|bill\b|original|duplicate|triplicate|gstin|pan\b|date\b|invoice\s*no|bill\s*no|page\s*\d)/i.test(l)) continue;
+    if(l.length>=3 && l.length<=60 && !/^[\d\s.,\-\/]+$/.test(l)){ partyName = l; break; }
+  }
+  const gstinMatch = norm.match(/\b[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][A-Z0-9]Z[A-Z0-9]\b/);
+  const gstin = gstinMatch ? gstinMatch[0] : '';
+  // Requires an explicit "No."/"Number"/"#" after "invoice"/"bill" — without that, "invoice" alone
+  // matches the document's own title line ("TAX INVOICE") and grabs whatever word follows it, which
+  // is usually the vendor's name, not a number.
+  let invoiceNo = '';
+  const invNoMatch = norm.match(/(?:invoice|bill|inv)\s*(?:no\.?|number|#)\s*[:\-]?\s*([A-Za-z0-9\/\-]{3,20})/i);
+  if(invNoMatch) invoiceNo = invNoMatch[1];
+  let dateISO = '';
+  const dateMatch = norm.match(/\b(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})\b/);
+  if(dateMatch){
+    let [, d, m, y] = dateMatch;
+    if(y.length===2) y = '20'+y;
+    d = d.padStart(2,'0'); m = m.padStart(2,'0');
+    if(+m>=1 && +m<=12 && +d>=1 && +d<=31) dateISO = `${y}-${m}-${d}`;
+  }
+  let taxable = null;
+  const taxableMatch = norm.match(/(?:taxable\s*value|sub\s*total|subtotal|basic\s*amount)\D{0,10}([\d,]+\.?\d*)/i);
+  if(taxableMatch) taxable = parseFloat(taxableMatch[1].replace(/,/g,''));
+  let gstRate = null;
+  const gstRateMatch = norm.match(/\bgst\b[^%\d]{0,10}(\d{1,2}(?:\.\d+)?)\s*%/i) || norm.match(/(\d{1,2}(?:\.\d+)?)\s*%\s*gst/i);
+  if(gstRateMatch) gstRate = parseFloat(gstRateMatch[1]);
+  let total = null;
+  const totalMatch = norm.match(/(?:grand\s*total|total\s*amount|amount\s*payable|net\s*amount|total\s*payable|total\s*due)\D{0,10}([\d,]+\.?\d*)/i);
+  if(totalMatch) total = parseFloat(totalMatch[1].replace(/,/g,''));
+  if(total==null){
+    const nums = [...norm.matchAll(/\b\d{1,3}(?:,\d{2,3})*(?:\.\d{1,2})?\b/g)].map(m=>parseFloat(m[0].replace(/,/g,''))).filter(n=>n>0);
+    if(nums.length) total = Math.max(...nums);
+  }
+  return { partyName, gstin, invoiceNo, dateISO, taxable, gstRate, total };
+}
+
 function renderTxTab(main, kind, title, subtitle, catGroup){
   if(kind==='sale' || kind==='purchase'){ renderGstTxTab(main, kind, title, subtitle, catGroup); return; }
 
@@ -2610,7 +2835,14 @@ function renderGstTxTab(main, kind, title, subtitle, catGroup){
     <div class="topbar"><div><h1 class="disp">${title}</h1><div class="sub">${subtitle}</div></div></div>
 
     <div class="panel">
-      <h2>Add ${title.toLowerCase().replace(/s$/,'')} entry <span class="tag">GST invoice ${maxItems!==Infinity? '· up to '+maxItems+' items':''}</span></h2>
+      <div class="row" style="justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:10px;">
+        <h2 style="margin:0;">Add ${title.toLowerCase().replace(/s$/,'')} entry <span class="tag">GST invoice ${maxItems!==Infinity? '· up to '+maxItems+' items':''}</span></h2>
+        <div>
+          <button type="button" class="btn ghost small" id="uploadInvoiceBtn">⬆ Upload ${kind==='sale'?'Invoice':'Bill'} (PDF)</button>
+          <input type="file" id="uploadInvoiceFile" accept="application/pdf" style="display:none;">
+        </div>
+      </div>
+      <div class="field-note" id="uploadInvoiceNote" style="display:none;margin:6px 0 2px;"></div>
       <form id="txForm">
         <div class="inline">
           <div><label>Date</label><input name="date" type="date" value="${todayISO()}" required id="dateInput"></div>
@@ -2925,6 +3157,60 @@ function renderGstTxTab(main, kind, title, subtitle, catGroup){
   partyGstinInput.addEventListener('input', updatePreview);
   applyChannelToLines();
   updateLineCountNote(); updatePreview();
+
+  /* Upload Invoice (PDF) — pre-fills the real form above from whatever could be read off the file,
+     then stops; nothing here saves anything. The person reviews every field (this is why the amount
+     and GST land in the normal, editable item line rather than a separate summary) and saves through
+     the same "Save invoice/bill" button as a manually typed entry, so every existing rule — GST split,
+     inventory linking, invoice numbering — runs exactly as it does for a typed-in entry. */
+  const uploadBtn = document.getElementById('uploadInvoiceBtn');
+  const uploadFile = document.getElementById('uploadInvoiceFile');
+  const uploadNote = document.getElementById('uploadInvoiceNote');
+  function nearestGstRate(r){
+    return GST_RATES.reduce((best,cur)=> Math.abs(cur-r)<Math.abs(best-r) ? cur : best, GST_RATES[0]);
+  }
+  if(uploadBtn) uploadBtn.addEventListener('click', ()=> uploadFile.click());
+  if(uploadFile) uploadFile.addEventListener('change', async e=>{
+    const file = e.target.files[0]; if(!file) return;
+    uploadNote.style.display = 'block';
+    uploadNote.textContent = `Reading ${file.name}…`;
+    try{
+      const text = await extractTextFromPdfFile(file);
+      const fx = extractInvoiceFieldsFromText(text);
+      if(fx.dateISO){ dateInput.value = fx.dateISO; dateInput.dispatchEvent(new Event('change', {bubbles:true})); }
+      if(fx.invoiceNo){ invoiceNoInput.readOnly = false; invoiceNoInput.value = fx.invoiceNo; }
+      if(fx.partyName){ partyNameInput.value = fx.partyName; }
+      if(fx.gstin){ partyGstinInput.value = fx.gstin; partyGstinInput.dispatchEvent(new Event('input', {bubbles:true})); }
+      const rows = currentLineRows();
+      if(rows.length){
+        const row = rows[0];
+        const descInp = row.querySelector('.lineDesc');
+        const qtyInp = row.querySelector('.lineQty');
+        const rateInp = row.querySelector('.lineRate');
+        const gstSel = row.querySelector('.lineGst');
+        descInp.value = `Items — from ${file.name} (please check)`;
+        qtyInp.value = 1;
+        if(fx.taxable!=null){
+          rateInp.value = fx.taxable;
+          if(fx.gstRate!=null) gstSel.value = String(nearestGstRate(fx.gstRate));
+        } else if(fx.total!=null){
+          // Only a grand total was found, not a separate taxable value — safer to enter it as the
+          // full amount with no tax added on top than to guess a GST split and overstate the total.
+          rateInp.value = fx.total;
+          gstSel.value = '0';
+        }
+        rateInp.dispatchEvent(new Event('input', {bubbles:true}));
+        gstSel.dispatchEvent(new Event('change', {bubbles:true}));
+      }
+      const found = [fx.partyName&&'name', fx.invoiceNo&&'invoice no.', fx.dateISO&&'date', (fx.taxable!=null||fx.total!=null)&&'amount', fx.gstin&&'GSTIN'].filter(Boolean);
+      uploadNote.textContent = found.length
+        ? `Filled in from ${file.name}: ${found.join(', ')}. Check every field — especially the amount and GST — before saving.`
+        : `Couldn't find much in ${file.name} — it may be a scanned or photographed PDF rather than a digital one. Fill in the fields manually.`;
+    }catch(err){
+      uploadNote.textContent = `Couldn't read ${file.name} — try a clearer PDF, or enter the details manually.`;
+    }
+    uploadFile.value = '';
+  });
 
   document.getElementById('txForm').addEventListener('submit', e=>{
     e.preventDefault();
@@ -4947,6 +5233,36 @@ function renderSettings(main){
     </details>
 
     <details class="panel report-collapse">
+      <summary><h2>Customers (for accountants)</h2></summary>
+      <div class="report-collapse-body">
+        <div class="field-note" style="margin-bottom:10px;">If you keep books for more than one customer, turn this on to switch between completely separate sets of books from this one install — each customer's entries, accounts and invoice details stay fully separate, never mixed. Leave this off for a single business — nothing here will ever show up for them.</div>
+        <label style="display:flex;align-items:center;gap:10px;cursor:pointer;">
+          <input type="checkbox" id="accountantModeToggle" ${registry.accountantMode?'checked':''} style="width:18px;height:18px;">
+          <span style="font-weight:600;">Accountant mode — manage multiple customers</span>
+        </label>
+
+        ${registry.accountantMode ? `
+        <div style="margin-top:18px;">
+          <div class="row"><button class="btn ghost small" id="settingsAddBookBtn">＋ Add new customer</button></div>
+          <div style="margin-top:12px;display:flex;flex-direction:column;gap:6px;">
+            ${registry.books.map(b=>`
+              <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 12px;border:1px solid var(--rule);border-radius:8px;${b.id===registry.activeBookId?'background:var(--paper);':''}">
+                <div style="min-width:0;">
+                  <div style="font-weight:700;font-size:13.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${b.name}${b.id===registry.activeBookId?' <span class="tag">current</span>':''}</div>
+                  <div class="field-note" style="margin:2px 0 0;">Updated ${b.updatedAt ? new Date(b.updatedAt).toLocaleDateString('en-IN',{day:'2-digit',month:'short',year:'numeric'}) : '—'}</div>
+                </div>
+                <div style="display:flex;gap:6px;flex-shrink:0;">
+                  ${b.id!==registry.activeBookId?`<button class="btn ghost small" data-open-book="${b.id}">Open</button>`:''}
+                  <button class="btn ghost small" data-rename-book="${b.id}">Rename</button>
+                  ${registry.books.length>1?`<button class="btn ghost small" data-delete-book="${b.id}" style="color:#B23B4A;">Delete</button>`:''}
+                </div>
+              </div>`).join('')}
+          </div>
+        </div>` : ''}
+      </div>
+    </details>
+
+    <details class="panel report-collapse">
       <summary><h2>Data and danger zone</h2></summary>
       <div class="report-collapse-body">
         <label style="display:block;margin-bottom:6px;">Backup and restore</label>
@@ -5278,6 +5594,58 @@ function renderSettings(main){
     save(); toast(`Unlocked — you're now on the ${TIER_LABELS[match]} plan.`); render();
   });
 
+  document.getElementById('accountantModeToggle').addEventListener('change', (e)=>{
+    if(e.target.checked){
+      enableAccountantMode();
+      toast('Accountant mode turned on — your current data is now your first customer.');
+      render();
+    } else {
+      if(registry.books.length>1 && !confirm('Turning this off keeps every customer\'s data saved, but you\'ll only see the one that\'s open right now. You can turn it back on anytime to switch again. Continue?')){
+        e.target.checked = true; return;
+      }
+      disableAccountantMode();
+      toast('Accountant mode turned off.');
+      render();
+    }
+  });
+  if(registry.accountantMode){
+    const settingsAddBtn = document.getElementById('settingsAddBookBtn');
+    if(settingsAddBtn) settingsAddBtn.addEventListener('click', ()=>{
+      const name = prompt('New customer / business name:');
+      if(!name || !name.trim()) return;
+      createAndSwitchToNewBook(name.trim());
+    });
+    document.querySelectorAll('[data-open-book]').forEach(btn=>{
+      btn.addEventListener('click', ()=> switchBook(btn.dataset.openBook));
+    });
+    document.querySelectorAll('[data-rename-book]').forEach(btn=>{
+      btn.addEventListener('click', ()=>{
+        const b = registry.books.find(x=>x.id===btn.dataset.renameBook); if(!b) return;
+        const name = prompt('Rename customer:', b.name);
+        if(!name || !name.trim()) return;
+        b.name = name.trim(); saveRegistry();
+        if(b.id===registry.activeBookId){ state.businessName = b.name; save(); }
+        render();
+      });
+    });
+    document.querySelectorAll('[data-delete-book]').forEach(btn=>{
+      btn.addEventListener('click', ()=>{
+        const b = registry.books.find(x=>x.id===btn.dataset.deleteBook); if(!b) return;
+        if(!confirm(`Delete "${b.name}" and all its data? This can't be undone.`)) return;
+        try{ localStorage.removeItem(bookStorageKey(b.id)); }catch(e){}
+        registry.books = registry.books.filter(x=>x.id!==b.id);
+        if(registry.activeBookId===b.id){
+          registry.activeBookId = registry.books[0] ? registry.books[0].id : null;
+          saveRegistry();
+          const raw = registry.activeBookId ? localStorage.getItem(activeStorageKey()) : null;
+          state = raw ? JSON.parse(raw) : seedState();
+          ensureNewFieldDefaults();
+        } else saveRegistry();
+        render();
+      });
+    });
+  }
+
   document.getElementById('exportJsonBtn').addEventListener('click', ()=>{
     const blob = new Blob([JSON.stringify(state,null,2)], {type:'application/json'});
     const a = document.createElement('a'); a.href = URL.createObjectURL(blob);
@@ -5323,7 +5691,7 @@ if(!state.onboarded){
   if(name && name.trim()) state.businessName = name.trim();
   state.onboarded = true;
 }
-try{ localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }catch(e){}
+try{ localStorage.setItem(activeStorageKey(), JSON.stringify(state)); }catch(e){}
 applySavedTheme();
 applyFontChoice();
 render();
