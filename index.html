@@ -139,6 +139,19 @@
   .chip.acc{ padding-left:10px;}
   .chip .bal{ font-family:'JetBrains Mono',monospace; color:var(--ink-soft);}
   .field-note{ font-size:11px; color:var(--ink-soft); margin-top:5px;}
+  /* Searchable item picker (Sales/Purchases line items) — a real <select class="lineItem"> stays in
+     the DOM (hidden) so every existing bit of code that reads/sets its .value or .selectedOptions
+     keeps working untouched; this is just a typeable front-end for it that mirrors its value via a
+     dispatched 'change' event. */
+  .itemCombo{ position:relative; min-width:170px;}
+  .lineItemInput{ width:100%; box-sizing:border-box; padding:7px 9px; font-size:13px; border:1px solid var(--rule); border-radius:7px; background:var(--paper); color:var(--ink);}
+  .lineItemInput:focus{ outline:none; border-color:var(--accent);}
+  .itemComboPanel{ position:absolute; left:0; right:0; top:100%; margin-top:2px; background:var(--paper); border:1px solid var(--accent); border-radius:8px; max-height:260px; overflow:auto; z-index:20; box-shadow:0 8px 20px rgba(20,20,43,.14);}
+  .itemComboRow{ padding:7px 10px; font-size:12.5px; cursor:default; border-top:1px solid var(--rule); display:flex; justify-content:space-between; gap:8px; color:var(--ink);}
+  .itemComboRow:first-child{ border-top:none;}
+  .itemComboRow.hi{ background:var(--accent-soft);}
+  .itemComboRow .stk{ color:var(--ink-soft); font-size:11px; white-space:nowrap;}
+  .itemComboEmpty{ padding:10px; font-size:12px; color:var(--ink-soft); text-align:center;}
   .info-icon{ display:inline-flex; align-items:center; justify-content:center; width:16px; height:16px; border-radius:50%; background:var(--accent-soft); color:var(--accent); font-size:11px; font-weight:700; font-style:normal; cursor:help; margin-left:4px; vertical-align:middle;}
   .settings-grid{ display:grid; grid-template-columns:repeat(auto-fit,minmax(240px,1fr)); gap:16px;}
   .statement{ max-width:640px;}
@@ -376,6 +389,102 @@ function applyFontChoice(){
   root.setProperty('--display-font', stack);
 }
 
+/* ============================= LICENSING / MODULE GATING =============================
+   Four independent, sellable modules — any combination can be bought together. A fresh
+   install starts with every module locked; an upgrade code (entered in Settings → Plan)
+   unlocks exactly the combination it was generated for, ADDED on top of whatever this
+   install already has (entering a new code never removes something already unlocked).
+   There's no server — this is a soft, offline deterrent (a shared-secret checksum), not real
+   DRM — so a determined buyer could bypass it, but it stops an ordinary customer from just
+   editing localStorage to unlock features they didn't pay for.
+
+   This block must stay ABOVE seedState()/load() below — they call allModules()/genAppId()
+   the moment the script first runs, so those functions (and the consts they use) have to
+   already exist by then, not just be declared later in the file.
+
+   MODULE_ORDER's position of each key is also its bit position in the combo code below —
+   never reorder it or already-issued codes stop matching. Add new modules at the END. */
+const MODULE_ORDER = ['gst','inventory','salesPurchase','multiCustomer'];
+const MODULE_LABELS = {
+  gst: 'GST invoicing',
+  inventory: 'Inventory',
+  salesPurchase: 'Sales & Purchase (incl. Journal Entry & Reports)',
+  multiCustomer: 'Multi-customer switch (for accountants)'
+};
+/* Which module (if any) a nav tab needs. Dashboard and Settings have no module requirement —
+   every install can always reach them. Journal Entry and Reports are bundled with Sales &
+   Purchase for now (Huzefa's call, 2026-10-09) — easy to split into their own key later by
+   just pointing 'general'/'reports' at a new module name here. */
+const TAB_MODULE = {
+  inventory: 'inventory',
+  cashflow: 'salesPurchase', sales: 'salesPurchase', purchases: 'salesPurchase', reconcile: 'salesPurchase',
+  general: 'salesPurchase', reports: 'salesPurchase'
+};
+function modulesOf(){ return (typeof state!=='undefined' && state && state.modules) || {}; }
+function hasModule(key){ return !!modulesOf()[key]; }
+function tabLocked(tab){
+  const need = TAB_MODULE[tab];
+  return need ? !hasModule(need) : false;
+}
+function allModules(on){
+  const m = {}; MODULE_ORDER.forEach(k=>{ m[k]=!!on; }); return m;
+}
+/* A readable per-install identifier — not secret itself (it's shown plainly in Settings so the
+   buyer can send it to Huzefa), but combined with APP_SECRET below it's what makes the upgrade
+   code for one install useless on another. */
+function genAppId(){
+  const part = ()=>Math.random().toString(36).slice(2,6).toUpperCase();
+  return 'AEC-'+part()+'-'+part()+'-'+part();
+}
+/* Baked into this file AND into the separate offline codegen tool Huzefa keeps for himself —
+   never shown to the customer. A fast, deterministic, non-cryptographic string hash (good enough
+   for a soft unlock code, not meant to resist serious attack). Returns an unsigned 53-bit number. */
+const APP_SECRET = 'AEC-BIZBOOKS-2026-K7Q';
+function licenseHash(str){
+  let h1 = 0xdeadbeef ^ 0, h2 = 0x41c6ce57 ^ 0;
+  for(let i=0;i<str.length;i++){
+    const ch = str.charCodeAt(i);
+    h1 = Math.imul(h1 ^ ch, 2654435761);
+    h2 = Math.imul(h2 ^ ch, 1597334677);
+  }
+  h1 = Math.imul(h1 ^ (h1>>>16), 2246822507) ^ Math.imul(h2 ^ (h2>>>13), 3266489909);
+  h2 = Math.imul(h2 ^ (h2>>>16), 2246822507) ^ Math.imul(h1 ^ (h1>>>13), 3266489909);
+  return 4294967296 * (2097151 & h2) + (h1>>>0);
+}
+/* A module combo (e.g. {gst:true, inventory:true, salesPurchase:false, multiCustomer:false})
+   collapses to a single number via MODULE_ORDER's bit positions, so it can ride inside the
+   hashed string the same way the old single tier name did. */
+function comboBits(modules){
+  let bits = 0;
+  MODULE_ORDER.forEach((k,i)=>{ if(modules && modules[k]) bits |= (1<<i); });
+  return bits;
+}
+function comboFromBits(bits){
+  const m = {};
+  MODULE_ORDER.forEach((k,i)=>{ m[k] = !!(bits & (1<<i)); });
+  return m;
+}
+/* The code a customer types into Settings → Plan to unlock a given module combination on
+   their own App ID. Deterministic from (secret, appId, combo) — so Huzefa can hand-generate
+   it offline with the matching codegen tool, no server or internet round-trip at either end. */
+function computeUpgradeCode(appId, modules){
+  const raw = licenseHash(APP_SECRET+'|'+(appId||'').toUpperCase().trim()+'|combo'+comboBits(modules)).toString(36).toUpperCase();
+  const code = raw.padStart(10,'0').slice(0,10);
+  return code.slice(0,5)+'-'+code.slice(5,10);
+}
+/* Tries every one of the 16 possible module combinations against the code the customer typed
+   in, and returns the matching combo's module flags (or null if the code doesn't match any
+   combination for this App ID — e.g. typo'd, or generated for a different install). */
+function matchUpgradeCode(appId, entered){
+  const want = (entered||'').trim().toUpperCase();
+  if(!want) return null;
+  for(let bits=1; bits<16; bits++){
+    const combo = comboFromBits(bits);
+    if(computeUpgradeCode(appId, combo) === want) return combo;
+  }
+  return null;
+}
+
 function seedState(){
   return {
     businessName: 'Your Business',
@@ -428,9 +537,9 @@ function seedState(){
     onboarded:false,
     theme: { preset:'Lavender', colors:null },
     fontChoice: { preset:'Inter', customName:'', customDataUrl:'', customFormat:'' },
-    // Brand-new installs start on the cheapest tier and get a fresh App ID right away so
+    // Brand-new installs start with every module locked and get a fresh App ID right away so
     // Settings → Plan has something to show from the very first screen.
-    tier: 'inventory',
+    modules: allModules(false),
     appId: genAppId()
   };
 }
@@ -443,6 +552,11 @@ function load(){
     if(!p.categories) return seedState();
     if(!p.inventoryItems) p.inventoryItems = [];
     if(!p.inventoryMovements) p.inventoryMovements = [];
+    // Any save from before modules existed (whatever single tier it was on, including the
+    // older 'tier' scheme before that) is grandfathered to every module unlocked — someone
+    // already using the app never has something they rely on taken away by this change.
+    if(!p.modules) p.modules = allModules(true);
+    MODULE_ORDER.forEach(k=>{ if(p.modules[k]===undefined) p.modules[k] = true; });
     if(p.businessGSTIN===undefined) p.businessGSTIN = '';
     if(p.homeState===undefined) p.homeState = '';
     if(!p.invoiceSettings) p.invoiceSettings = seedState().invoiceSettings;
@@ -695,7 +809,7 @@ function createAndSwitchToNewBook(name){
 /* Turning accountant mode on for the first time migrates whatever's open right now into book #1 — named
    after the business already in use — so nothing already entered is lost or hidden. */
 function enableAccountantMode(){
-  if(registry.accountantMode) return;
+  if(registry.accountantMode || !hasModule('multiCustomer')) return;
   const migratingId = uid();
   const name = state.businessName || 'My Business';
   try{ localStorage.setItem(bookStorageKey(migratingId), JSON.stringify(state)); }catch(e){}
@@ -724,56 +838,6 @@ function driveSignOut(){   if(gAccessToken && window.google){ google.accounts.oa
    whatever might. */
 function uid(){ return Date.now().toString(36)+'-'+Math.random().toString(36).slice(2,8); }
 
-/* ============================= LICENSING / TIER GATING =============================
-   Three sellable tiers, cheapest to priciest. Every tab in the nav is pinned to the lowest
-   tier that's allowed to open it. A fresh install starts on the lowest tier (Inventory); an
-   upgrade code (entered in Settings → Plan) raises state.tier permanently for this install.
-   There's no server — this is a soft, offline deterrent (a shared-secret checksum), not real
-   DRM — so a determined buyer could bypass it, but it stops an ordinary customer from just
-   editing localStorage to unlock features they didn't pay for. */
-const TIER_RANK = { inventory:1, salesPurchase:2, complete:3 };
-const TIER_LABELS = { inventory:'Inventory', salesPurchase:'Sales & Purchase', complete:'Complete' };
-const TIER_ORDER = ['inventory','salesPurchase','complete'];
-const TAB_MIN_TIER = {
-  dashboard:'inventory', inventory:'inventory', settings:'inventory',
-  cashflow:'salesPurchase', sales:'salesPurchase', purchases:'salesPurchase', reconcile:'salesPurchase',
-  general:'complete', reports:'complete'
-};
-function tabLocked(tab){
-  const min = TAB_MIN_TIER[tab] || 'inventory';
-  const have = TIER_RANK[state.tier || 'complete'] || 3;
-  return have < TIER_RANK[min];
-}
-/* A readable per-install identifier — not secret itself (it's shown plainly in Settings so the
-   buyer can send it to Huzefa), but combined with APP_SECRET below it's what makes the upgrade
-   code for one install useless on another. */
-function genAppId(){
-  const part = ()=>Math.random().toString(36).slice(2,6).toUpperCase();
-  return 'AEC-'+part()+'-'+part()+'-'+part();
-}
-/* Baked into this file AND into the separate offline codegen tool Huzefa keeps for himself —
-   never shown to the customer. A fast, deterministic, non-cryptographic string hash (good enough
-   for a soft unlock code, not meant to resist serious attack). Returns an unsigned 53-bit number. */
-const APP_SECRET = 'AEC-BIZBOOKS-2026-K7Q';
-function licenseHash(str){
-  let h1 = 0xdeadbeef ^ 0, h2 = 0x41c6ce57 ^ 0;
-  for(let i=0;i<str.length;i++){
-    const ch = str.charCodeAt(i);
-    h1 = Math.imul(h1 ^ ch, 2654435761);
-    h2 = Math.imul(h2 ^ ch, 1597334677);
-  }
-  h1 = Math.imul(h1 ^ (h1>>>16), 2246822507) ^ Math.imul(h2 ^ (h2>>>13), 3266489909);
-  h2 = Math.imul(h2 ^ (h2>>>16), 2246822507) ^ Math.imul(h1 ^ (h1>>>13), 3266489909);
-  return 4294967296 * (2097151 & h2) + (h1>>>0);
-}
-/* The code a customer types into Settings → Plan to unlock a given tier on their own App ID.
-   Deterministic from (secret, appId, tier) — so Huzefa can hand-generate it offline with the
-   matching codegen tool, no server or internet round-trip needed at either end. */
-function computeUpgradeCode(appId, tier){
-  const raw = licenseHash(APP_SECRET+'|'+(appId||'').toUpperCase().trim()+'|'+tier).toString(36).toUpperCase();
-  const code = raw.padStart(10,'0').slice(0,10);
-  return code.slice(0,5)+'-'+code.slice(5,10);
-}
 /* Combines two record arrays (each item has its own unique .id) into one, keeping every record that
    exists in either array and isn't in deletedIds. When the same id exists in both — an edit made
    after the two devices' last common sync point — the LOCAL version wins: on the device doing the
@@ -2070,12 +2134,14 @@ function ensureNewFieldDefaults(){
   if(!state.categorySubtitles.expense) state.categorySubtitles.expense = {};
   if(!state.theme) state.theme = { preset:'Lavender', colors:null };
   if(!state.fontChoice) state.fontChoice = { preset:'Inter', customName:'', customDataUrl:'', customFormat:'' };
-  /* Tier gating is new. Any save that predates this feature has no state.tier at all — that
-     includes every install already in someone's hands, Huzefa's own working copy among them.
-     Those get grandfathered straight to 'complete' so nothing they already had access to
-     suddenly locks on them; only a genuinely fresh install (seeded with tier:'inventory' above)
-     starts gated. appId is likewise generated once, the first time it's missing, and then kept. */
-  if(!state.tier) state.tier = 'complete';
+  /* Module gating is new (replaced the earlier single-tier scheme on 2026-10-09). Any save that
+     predates it has no state.modules at all — that includes every install already in someone's
+     hands, Huzefa's own working copy among them. Those get grandfathered to every module
+     unlocked so nothing they already had access to suddenly locks on them; only a genuinely
+     fresh install (seeded with modules all false above) starts gated. appId is likewise
+     generated once, the first time it's missing, and then kept. */
+  if(!state.modules) state.modules = allModules(true);
+  MODULE_ORDER.forEach(k=>{ if(state.modules[k]===undefined) state.modules[k] = true; });
   if(!state.appId) state.appId = genAppId();
   if(!state.invoiceSettings.template) state.invoiceSettings.template = 'classic';
   if(!state.invoiceSettings.accentColor) state.invoiceSettings.accentColor = 'navy';
@@ -2096,13 +2162,12 @@ function updateNavLockBadges(){
   });
 }
 function renderLockedTab(main, tab){
-  const min = TAB_MIN_TIER[tab] || 'inventory';
+  const need = TAB_MODULE[tab];
+  const label = MODULE_LABELS[need] || 'this module';
   main.innerHTML = `
-    <div class="topbar"><div><h1 class="disp">🔒 Locked</h1><div class="sub">This section needs a higher plan.</div></div></div>
+    <div class="topbar"><div><h1 class="disp">🔒 Locked</h1><div class="sub">This section isn't part of your plan yet.</div></div></div>
     <div class="card" style="max-width:540px;">
-      <div class="label">Your current plan</div>
-      <div class="value" style="font-size:20px;">${TIER_LABELS[state.tier||'inventory']}</div>
-      <p style="margin-top:14px;color:var(--muted);">This section is part of the <b>${TIER_LABELS[min]}</b> plan. Head to <b>Settings → Plan &amp; upgrade</b> and enter an upgrade code to unlock it — or get in touch to purchase one.</p>
+      <p style="color:var(--muted);">This section needs the <b>${label}</b> module. Head to <b>Settings → Plan &amp; upgrade</b> and enter an upgrade code to unlock it — or get in touch to purchase one.</p>
       <div class="row" style="margin-top:14px;"><button class="btn primary" id="lockedGoSettingsBtn">Go to Settings</button></div>
     </div>`;
   const btn = document.getElementById('lockedGoSettingsBtn');
@@ -2116,7 +2181,7 @@ let bookSwitcherOpen = false;
 function renderBookSwitcher(){
   const box = document.getElementById('bookSwitcher');
   if(!box) return;
-  if(!registry.accountantMode){ box.innerHTML=''; box.style.display='none'; return; }
+  if(!registry.accountantMode || !hasModule('multiCustomer')){ box.innerHTML=''; box.style.display='none'; return; }
   box.style.display = 'block';
   const current = registry.books.find(b=>b.id===registry.activeBookId);
   const currentName = current ? current.name : 'Select a customer';
@@ -2814,19 +2879,25 @@ function renderGstTxTab(main, kind, title, subtitle, catGroup){
     lineRowId++;
     return `<tr data-line="${lineRowId}">
       <td class="linenum">${lineRowId}</td>
-      <td><select class="lineItem">
-        <option value="">— manual / service —</option>
-        ${invItems.map(i=>{
-          const variant = itemVariantLabel(i);
-          const dispName = variant ? `${i.name} (${variant})` : i.name;
-          return `<option value="${i.id}" data-price="${kind==='sale'?(i.price||i.cost):i.cost}" data-name="${dispName}" data-gst="${i.gstRate!=null?i.gstRate:18}">${dispName} — ${fmt(i.qty)} ${i.unit} on hand${i.type?', '+i.type:''}</option>`;
-        }).join('')}
-      </select></td>
+      <td>
+        <div class="itemCombo">
+          <select class="lineItem" style="position:absolute;opacity:0;pointer-events:none;width:1px;height:1px;">
+            <option value="">— manual / service —</option>
+            ${invItems.map(i=>{
+              const variant = itemVariantLabel(i);
+              const dispName = variant ? `${i.name} (${variant})` : i.name;
+              return `<option value="${i.id}" data-price="${kind==='sale'?(i.price||i.cost):i.cost}" data-name="${dispName}" data-gst="${i.gstRate!=null?i.gstRate:18}" data-qty="${i.qty}" data-unit="${i.unit||''}" data-type="${i.type||''}">${dispName}</option>`;
+            }).join('')}
+          </select>
+          <input class="lineItemInput" placeholder="— manual / service — or search stock…" autocomplete="off">
+          <div class="itemComboPanel" style="display:none;"></div>
+        </div>
+      </td>
       <td><input class="lineDesc" placeholder="Description"></td>
       <td class="lineqty"><input class="lineQty" type="number" step="any" value="1"></td>
       <td class="linerate"><input class="lineRate" type="number" step="any" min="0" value="0"></td>
       <td class="lineamt"><input class="lineAmount" type="number" step="any" min="0" value="0"></td>
-      <td class="linegst"><select class="lineGst">${GST_RATES.map(r=>`<option value="${r}" ${r===18?'selected':''}>${r}%</option>`).join('')}</select></td>
+      <td class="linegst"><select class="lineGst" ${!hasModule('gst')?'disabled title="Needs the GST module — Settings → Plan & upgrade"':''}>${GST_RATES.map(r=>`<option value="${r}" ${(hasModule('gst')?r===18:r===0)?'selected':''}>${r}%</option>`).join('')}</select></td>
       <td class="linermv"><button type="button" class="btn ghost small lineRemove" title="Remove line">×</button></td>
     </tr>`;
   }
@@ -3119,6 +3190,94 @@ function renderGstTxTab(main, kind, title, subtitle, catGroup){
       supplyTypeNote.textContent = `Intra-state (CGST+SGST) — assumed (no GSTIN or saved state for this ${partyLabel.toLowerCase()}).`;
     }
   }
+  /* Searchable front-end for the hidden <select class="lineItem"> (see lineRowHtml above). Never
+     duplicates the select's own change-handling logic (auto-filling description/rate/GST) — it just
+     sets the real select's value and dispatches a real 'change' event on it, exactly the way the
+     Upload Invoice (PDF) feature already drives this same form safely. */
+  function wireItemCombo(row, itemSel){
+    const input = row.querySelector('.lineItemInput');
+    const panel = row.querySelector('.itemComboPanel');
+    const allOptions = [...itemSel.options].filter(o=>o.value!=='').map(o=>({
+      id:o.value, name:o.dataset.name||o.textContent, qty:o.dataset.qty, unit:o.dataset.unit
+    })).sort((a,b)=>a.name.localeCompare(b.name));
+    let navItems = [], activeIdx = 0;
+
+    function currentQuery(){ return input.value.trim().toLowerCase(); }
+    function syncDisplay(){
+      // Reflects whatever itemSel currently holds — covers the "editing an existing entry" path,
+      // where itemSel.value is set directly before wireRow()/wireItemCombo() ever run.
+      const opt = itemSel.value ? itemSel.selectedOptions[0] : null;
+      input.value = opt ? (opt.dataset.name||opt.textContent) : '';
+    }
+    syncDisplay();
+
+    function highlightMatch(name, q){
+      if(!q) return name;
+      const idx = name.toLowerCase().indexOf(q);
+      if(idx<0) return name;
+      return name.slice(0,idx) + '<b>' + name.slice(idx, idx+q.length) + '</b>' + name.slice(idx+q.length);
+    }
+    function buildNavItems(q){
+      const manual = q ? [] : [{ manual:true, name:'— manual / service —' }];
+      const list = q ? allOptions.filter(o=>o.name.toLowerCase().includes(q)) : allOptions;
+      return manual.concat(list);
+    }
+    function renderPanel(){
+      const q = currentQuery();
+      navItems = buildNavItems(q);
+      activeIdx = Math.max(0, Math.min(activeIdx, navItems.length-1));
+      panel.innerHTML = navItems.length===0
+        ? `<div class="itemComboEmpty">No stock item matches — this will be saved as a manual line.</div>`
+        : navItems.map((o,i)=>{
+            if(o.manual) return `<div class="itemComboRow ${i===activeIdx?'hi':''}" data-idx="${i}" style="font-style:italic;color:var(--ink-soft);"><span>— manual / service —</span></div>`;
+            const stock = (o.qty!=null && o.qty!=='') ? `${fmt(Number(o.qty))} ${o.unit||''} on hand` : '';
+            return `<div class="itemComboRow ${i===activeIdx?'hi':''}" data-idx="${i}"><span>${highlightMatch(o.name,q)}</span><span class="stk">${stock}</span></div>`;
+          }).join('');
+      panel.style.display = 'block';
+      [...panel.querySelectorAll('.itemComboRow[data-idx]')].forEach(el=>{
+        el.addEventListener('mousedown', e=>e.preventDefault()); // keep input focused so blur doesn't close the panel before the click lands
+        el.addEventListener('mouseenter', ()=>{ activeIdx = parseInt(el.dataset.idx,10); highlightOnly(); });
+        el.addEventListener('click', ()=> choose(parseInt(el.dataset.idx,10)));
+      });
+    }
+    function highlightOnly(){
+      [...panel.querySelectorAll('.itemComboRow[data-idx]')].forEach(el=>{
+        el.classList.toggle('hi', parseInt(el.dataset.idx,10)===activeIdx);
+      });
+    }
+    function scrollActiveIntoView(){
+      const el = panel.querySelector(`.itemComboRow[data-idx="${activeIdx}"]`);
+      if(el && el.scrollIntoView) el.scrollIntoView({block:'nearest'});
+    }
+    function closePanel(){ panel.style.display='none'; panel.innerHTML=''; }
+    function choose(i){
+      const it = navItems[i];
+      if(!it) return;
+      itemSel.value = it.manual ? '' : it.id;
+      itemSel.dispatchEvent(new Event('change', {bubbles:true}));
+      syncDisplay();
+      closePanel();
+    }
+
+    input.addEventListener('focus', ()=>{ activeIdx = 0; renderPanel(); });
+    input.addEventListener('input', ()=>{ activeIdx = 0; renderPanel(); });
+    input.addEventListener('blur', ()=>{ syncDisplay(); closePanel(); });
+    input.addEventListener('keydown', (e)=>{
+      if(e.key==='ArrowDown'){
+        e.preventDefault();
+        if(panel.style.display==='none'){ renderPanel(); return; }
+        activeIdx = Math.min(activeIdx+1, navItems.length-1); highlightOnly(); scrollActiveIntoView();
+      } else if(e.key==='ArrowUp'){
+        e.preventDefault();
+        if(panel.style.display==='none'){ renderPanel(); return; }
+        activeIdx = Math.max(activeIdx-1, 0); highlightOnly(); scrollActiveIntoView();
+      } else if(e.key==='Enter'){
+        if(panel.style.display!=='none' && navItems.length){ e.preventDefault(); choose(activeIdx); }
+      } else if(e.key==='Escape'){
+        closePanel();
+      }
+    });
+  }
   function wireRow(row){
     const itemSel = row.querySelector('.lineItem');
     const descInp = row.querySelector('.lineDesc');
@@ -3132,6 +3291,7 @@ function renderGstTxTab(main, kind, title, subtitle, catGroup){
       const isCash = channelInput && channelInput.value==='local-cash';
       if(itemSel.value){ descInp.value = opt.dataset.name||''; rateInp.value = opt.dataset.price||0; gstSel.value = isCash ? 0 : (opt.dataset.gst||18); recalcAmt(); }
     });
+    wireItemCombo(row, itemSel);
     qtyInp.addEventListener('input', recalcAmt);
     rateInp.addEventListener('input', recalcAmt);
     amtInp.addEventListener('input', updatePreview);
@@ -3192,7 +3352,7 @@ function renderGstTxTab(main, kind, title, subtitle, catGroup){
         qtyInp.value = 1;
         if(fx.taxable!=null){
           rateInp.value = fx.taxable;
-          if(fx.gstRate!=null) gstSel.value = String(nearestGstRate(fx.gstRate));
+          if(fx.gstRate!=null && hasModule('gst')) gstSel.value = String(nearestGstRate(fx.gstRate));
         } else if(fx.total!=null){
           // Only a grand total was found, not a separate taxable value — safer to enter it as the
           // full amount with no tax added on top than to guess a GST split and overstate the total.
@@ -5061,14 +5221,15 @@ function renderSettings(main){
         <div class="settings-grid">
           <div><label>Business name</label><input id="bizNameInput" value="${state.businessName}"></div>
           <div><label>Currency symbol</label><input id="currencyInput" value="${state.currency}" maxlength="3"></div>
-          <div><label>Your GSTIN</label><input id="bizGstinInput" value="${state.businessGSTIN||''}" maxlength="15" placeholder="15-char GSTIN" style="text-transform:uppercase;"></div>
+          <div><label>Your GSTIN ${!hasModule('gst')?'<span class="tag">🔒 needs GST module</span>':''}</label><input id="bizGstinInput" value="${state.businessGSTIN||''}" maxlength="15" placeholder="15-char GSTIN" style="text-transform:uppercase;" ${!hasModule('gst')?'disabled':''}></div>
           <div><label>Home state (for intra/inter-state GST)</label>
-            <select id="bizStateInput">
+            <select id="bizStateInput" ${!hasModule('gst')?'disabled':''}>
               <option value="">— Select state —</option>
               ${INDIA_STATE_LIST.map(s=>`<option value="${s}" ${state.homeState===s?'selected':''}>${s}</option>`).join('')}
             </select>
           </div>
         </div>
+        ${!hasModule('gst')?`<div class="field-note" style="margin-top:8px;">GST invoicing isn't part of your plan — your books run as a non-GST business. Enter an upgrade code in <b>Plan &amp; upgrade</b> below to turn it on.</div>`:''}
         <div class="row" style="margin-top:12px;"><button class="btn primary" id="saveBizBtn">Save</button></div>
 
         <div style="border-top:1px solid var(--rule); margin:22px 0 18px;"></div>
@@ -5077,8 +5238,8 @@ function renderSettings(main){
         <div class="settings-grid">
           <div><label>Legal name on invoice <span class="tag">defaults to business name</span></label><input id="invNameInput" value="${state.invoiceSettings.businessLegalName}" placeholder="${state.businessName}"></div>
           <div><label>Tagline (under name)</label><input id="invTaglineInput" value="${state.invoiceSettings.tagline||''}"></div>
-          <div><label>GSTIN on invoice <span class="tag">defaults to GSTIN above</span></label><input id="invGstinInput" value="${state.invoiceSettings.gstin}" maxlength="15" style="text-transform:uppercase;" placeholder="${state.businessGSTIN||''}"></div>
-          <div><label>PAN</label><input id="invPanInput" value="${state.invoiceSettings.pan}" maxlength="10" style="text-transform:uppercase;"></div>
+          <div><label>GSTIN on invoice <span class="tag">defaults to GSTIN above</span></label><input id="invGstinInput" value="${state.invoiceSettings.gstin}" maxlength="15" style="text-transform:uppercase;" placeholder="${state.businessGSTIN||''}" ${!hasModule('gst')?'disabled':''}></div>
+          <div><label>PAN</label><input id="invPanInput" value="${state.invoiceSettings.pan}" maxlength="10" style="text-transform:uppercase;" ${!hasModule('gst')?'disabled':''}></div>
           <div><label>Address</label><input id="invAddressInput" value="${state.invoiceSettings.address}"></div>
           <div><label>Mobile</label><input id="invMobileInput" value="${state.invoiceSettings.mobile}"></div>
           <div><label>Email</label><input id="invEmailInput" value="${state.invoiceSettings.email}"></div>
@@ -5204,21 +5365,17 @@ function renderSettings(main){
     <details class="panel report-collapse">
       <summary><h2>Plan &amp; upgrade</h2></summary>
       <div class="report-collapse-body">
-        <div class="settings-grid">
-          <div>
-            <label>Your App ID</label>
-            <input id="appIdDisplay" value="${state.appId||''}" readonly style="font-family:monospace; letter-spacing:.03em;">
-            <div class="field-note">Send this ID when you buy an upgrade — the code you get back only works on this App ID.</div>
-          </div>
-          <div>
-            <label>Current plan</label>
-            <input value="${TIER_LABELS[state.tier||'inventory']}" readonly>
-          </div>
-        </div>
-        <div class="field-note" style="margin:10px 0 4px;">
-          <b>Inventory</b> — Dashboard, Inventory, Settings.
-          &nbsp;·&nbsp; <b>Sales &amp; Purchase</b> adds Cash Flow, Sales, Purchases, Reconcile.
-          &nbsp;·&nbsp; <b>Complete</b> adds Journal Entry and Reports.
+        <label>Your App ID</label>
+        <input id="appIdDisplay" value="${state.appId||''}" readonly style="font-family:monospace; letter-spacing:.03em; max-width:320px;">
+        <div class="field-note" style="margin-bottom:14px;">Send this ID when you buy an upgrade — the code you get back only works on this App ID.</div>
+
+        <label style="display:block;margin-bottom:6px;">Your modules</label>
+        <div style="display:flex;flex-direction:column;gap:6px;max-width:460px;">
+          ${MODULE_ORDER.map(k=>`
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:9px 12px;border:1px solid var(--rule);border-radius:8px;">
+              <span style="font-size:13.5px;">${MODULE_LABELS[k]}</span>
+              <span style="font-weight:700;font-size:12.5px;${hasModule(k)?'color:#3C7A57;':'color:var(--muted);'}">${hasModule(k)?'✓ Unlocked':'🔒 Locked'}</span>
+            </div>`).join('')}
         </div>
 
         <div style="border-top:1px solid var(--rule); margin:18px 0 16px;"></div>
@@ -5228,13 +5385,16 @@ function renderSettings(main){
           <input id="upgradeCodeInput" placeholder="XXXXX-XXXXX" style="max-width:180px; font-family:monospace; text-transform:uppercase;">
           <button class="btn primary" id="unlockTierBtn">Unlock</button>
         </div>
-        <div class="field-note">Enter the code exactly as given, including the dash.</div>
+        <div class="field-note">Enter the code exactly as given, including the dash. A code only ever adds modules — it never removes one you already have.</div>
       </div>
     </details>
 
     <details class="panel report-collapse">
       <summary><h2>Customers (for accountants)</h2></summary>
       <div class="report-collapse-body">
+        ${!hasModule('multiCustomer') ? `
+        <p style="color:var(--muted);">This feature needs the <b>${MODULE_LABELS.multiCustomer}</b> module. Enter an upgrade code in <b>Plan &amp; upgrade</b> above to unlock it — or get in touch to purchase one.</p>
+        ` : `
         <div class="field-note" style="margin-bottom:10px;">If you keep books for more than one customer, turn this on to switch between completely separate sets of books from this one install — each customer's entries, accounts and invoice details stay fully separate, never mixed. Leave this off for a single business — nothing here will ever show up for them.</div>
         <label style="display:flex;align-items:center;gap:10px;cursor:pointer;">
           <input type="checkbox" id="accountantModeToggle" ${registry.accountantMode?'checked':''} style="width:18px;height:18px;">
@@ -5259,6 +5419,7 @@ function renderSettings(main){
               </div>`).join('')}
           </div>
         </div>` : ''}
+        `}
       </div>
     </details>
 
@@ -5585,16 +5746,18 @@ function renderSettings(main){
   document.getElementById('unlockTierBtn').addEventListener('click', ()=>{
     const entered = document.getElementById('upgradeCodeInput').value.trim().toUpperCase();
     if(!entered){ toast('Enter the upgrade code you were given.'); return; }
-    const haveRank = TIER_RANK[state.tier||'inventory'] || 1;
-    // Check from the top down so a "Complete" code (which also happens to satisfy nothing lower)
-    // unlocks the highest tier it actually matches, not the first one tried.
-    const match = [...TIER_ORDER].reverse().find(t => TIER_RANK[t] > haveRank && computeUpgradeCode(state.appId, t) === entered);
-    if(!match){ toast('That code doesn\'t match this App ID, or you already have this plan.'); return; }
-    state.tier = match;
-    save(); toast(`Unlocked — you're now on the ${TIER_LABELS[match]} plan.`); render();
+    const combo = matchUpgradeCode(state.appId, entered);
+    if(!combo){ toast('That code doesn\'t match this App ID.'); return; }
+    const newlyUnlocked = MODULE_ORDER.filter(k=>combo[k] && !state.modules[k]);
+    if(newlyUnlocked.length===0){ toast('You already have every module in this code.'); return; }
+    // A code only ever ADDS modules on top of what's already unlocked — never removes one.
+    MODULE_ORDER.forEach(k=>{ if(combo[k]) state.modules[k] = true; });
+    save(); toast(`Unlocked — ${newlyUnlocked.map(k=>MODULE_LABELS[k]).join(', ')}.`); render();
   });
 
-  document.getElementById('accountantModeToggle').addEventListener('change', (e)=>{
+  const accountantModeToggleEl = document.getElementById('accountantModeToggle');
+  if(accountantModeToggleEl) accountantModeToggleEl.addEventListener('change', (e)=>{
+    if(!hasModule('multiCustomer')){ e.target.checked = false; return; }
     if(e.target.checked){
       enableAccountantMode();
       toast('Accountant mode turned on — your current data is now your first customer.');
