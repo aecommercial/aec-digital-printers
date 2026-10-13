@@ -836,7 +836,17 @@ function driveSignOut(){   if(gAccessToken && window.google){ google.accounts.oa
    any coordination between them. state.nextId is left in place, unused, rather than removed — no
    other code reads it, so there's nothing to gain by touching it, and no reason to risk breaking
    whatever might. */
-function uid(){ return Date.now().toString(36)+'-'+Math.random().toString(36).slice(2,8); }
+/* A same-millisecond counter, reset whenever the clock moves on — so two records created back to
+   back (a bulk action, or just a fast click) still get strictly increasing ids even when
+   Date.now() itself hasn't ticked over yet. Purely an ordering aid (see idSortKey below); it does
+   nothing for cross-device uniqueness, which the random suffix below still handles on its own. */
+let __uidLastT = 0, __uidSeq = 0;
+function uid(){
+  const t = Date.now();
+  if(t === __uidLastT){ __uidSeq++; } else { __uidLastT = t; __uidSeq = 0; }
+  const seq = __uidSeq.toString(36).padStart(2,'0');
+  return t.toString(36)+seq+'-'+Math.random().toString(36).slice(2,8);
+}
 
 /* Combines two record arrays (each item has its own unique .id) into one, keeping every record that
    exists in either array and isn't in deletedIds. When the same id exists in both — an edit made
@@ -916,10 +926,27 @@ function dispDate(iso){
   if(!m) return iso;
   return `${m[3]}/${m[2]}/${m[1]}`;
 }
+/* Recovers a real creation-time number from a record's id, for the same-date tiebreak below.
+   uid() ids look like "m1x2y3-ab12cd" — base36 Date.now() timestamp, a dash, then a random
+   suffix — so the part before the dash IS the millisecond it was created; decoding it gives a
+   true "created more recently" ordering. Falls back to treating the whole id as a plain number,
+   which still works for any very old record that predates uid() and used a bare incrementing id
+   (bigger number = created later, same idea). Unrecognisable ids sort as 0 (oldest), never crash. */
+function idSortKey(id){
+  if(id==null) return 0;
+  const s = String(id);
+  const dash = s.indexOf('-');
+  if(dash > 0){
+    const t = parseInt(s.slice(0, dash), 36);
+    if(!isNaN(t)) return t;
+  }
+  const n = Number(s);
+  return isNaN(n) ? 0 : n;
+}
 /* Stable "most-recent-first" sort: primarily by date, and for entries on the same date, by which was
-   created more recently (higher auto-incrementing id = created later) — so the entry you just added
-   always lands at the very top, even if it shares today's date with earlier entries. */
-function byDateThenNewestFirst(a,b){ return (new Date(b.date)-new Date(a.date)) || ((b.id||0)-(a.id||0)); }
+   created more recently (via idSortKey above) — so the entry you just added always lands at the very
+   top, even if it shares today's date with several earlier entries. */
+function byDateThenNewestFirst(a,b){ return (new Date(b.date)-new Date(a.date)) || (idSortKey(b.id)-idSortKey(a.id)); }
 /* Small colored tag for a sale's channel — only shown for the non-default channels so the history
    table stays uncluttered for ordinary local GST invoices. */
 function channelBadge(t){
