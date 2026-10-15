@@ -2656,6 +2656,10 @@ function renderGeneralEntryTab(main){
 
   function refreshFields(){
     const k = kindSelect.value;
+    // The plain Amount box is hidden in Split mode; if it stays `required` the browser silently
+    // refuses to submit the form (it can't focus a hidden required field), so Split could never save.
+    const plainAmount = document.querySelector('#amountField input[name="amount"]');
+    if(plainAmount){ plainAmount.required = (k!=='split'); plainAmount.disabled = (k==='split'); }
     if(k==='contra'){
       catField.style.display='none'; amountField.style.display='';
       singleAcctField.style.display='none';
